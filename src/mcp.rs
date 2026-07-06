@@ -33,7 +33,7 @@ struct ReadParams {
 struct ReadSectionParams {
     /// 相对于 knowledge_root 的 Markdown 路径
     path: String,
-    /// section 的 heading_path；多 section 文档建议先调 get_document_outline 获取
+    /// section 的 heading_path；多 section 文档建议先调 get_document_outline 获取带行号 locator 的大纲
     heading_path: Option<String>,
 }
 
@@ -92,7 +92,9 @@ impl WikiMcpServer {
 
 #[tool_router(server_handler)]
 impl WikiMcpServer {
-    #[tool(description = "Search the indexed Markdown knowledge base")]
+    #[tool(
+        description = "Search evidence chunks in the indexed Markdown knowledge base and return source locators"
+    )]
     fn search_knowledge(
         &self,
         Parameters(SearchParams { query, limit }): Parameters<SearchParams>,
@@ -103,7 +105,9 @@ impl WikiMcpServer {
             .map_err(|err| err.to_string())
     }
 
-    #[tool(description = "Search the indexed section summaries of the Markdown knowledge base")]
+    #[tool(
+        description = "Search section summaries in the indexed Markdown knowledge base and return source locators"
+    )]
     fn search_sections(
         &self,
         Parameters(SearchParams { query, limit }): Parameters<SearchParams>,
@@ -149,7 +153,9 @@ impl WikiMcpServer {
             .map_err(|err| err.to_string())
     }
 
-    #[tool(description = "Read a Markdown document from the knowledge root")]
+    #[tool(
+        description = "Compatibility fallback: read a Markdown document from the knowledge root"
+    )]
     fn read_document(
         &self,
         Parameters(ReadParams { path }): Parameters<ReadParams>,
@@ -160,7 +166,9 @@ impl WikiMcpServer {
             .map_err(|err| err.to_string())
     }
 
-    #[tool(description = "Get the stored section outline of a Markdown document")]
+    #[tool(
+        description = "Get the stored section outline of a Markdown document with line-based locators"
+    )]
     fn get_document_outline(
         &self,
         Parameters(ReadParams { path }): Parameters<ReadParams>,
@@ -171,7 +179,9 @@ impl WikiMcpServer {
             .map_err(|err| err.to_string())
     }
 
-    #[tool(description = "Read one indexed section from a Markdown document")]
+    #[tool(
+        description = "Compatibility fallback: read one indexed section from a Markdown document"
+    )]
     fn read_section(
         &self,
         Parameters(ReadSectionParams { path, heading_path }): Parameters<ReadSectionParams>,
@@ -193,7 +203,9 @@ impl WikiMcpServer {
             .map_err(|err| err.to_string())
     }
 
-    #[tool(description = "Check one Markdown document's frontmatter syntax and lint issues")]
+    #[tool(
+        description = "Check one Markdown document's frontmatter syntax and lint issues with source spans"
+    )]
     fn check_metadata(
         &self,
         Parameters(MetadataPathParams { path }): Parameters<MetadataPathParams>,
@@ -230,7 +242,7 @@ impl WikiMcpServer {
             .map_err(|err| err.to_string())
     }
 
-    #[tool(description = "Reindex the full Markdown tree incrementally")]
+    #[tool(description = "Fallback admin tool: reindex the full Markdown tree incrementally")]
     fn reindex_all(&self) -> Result<Json<IndexStats>, String> {
         self.service
             .reindex_all()

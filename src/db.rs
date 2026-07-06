@@ -45,6 +45,9 @@ impl IndexDatabase {
                 body_text TEXT NOT NULL,
                 first_paragraph TEXT NOT NULL,
                 section_hash TEXT NOT NULL,
+                heading_line INTEGER NOT NULL DEFAULT 0,
+                body_start_line INTEGER NOT NULL DEFAULT 0,
+                end_line INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(doc_path) REFERENCES documents(doc_path) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_sections_doc_path ON sections(doc_path, ordinal);
@@ -93,9 +96,12 @@ impl IndexDatabase {
                 section_id TEXT NOT NULL DEFAULT '',
                 doc_path TEXT NOT NULL,
                 ordinal INTEGER NOT NULL,
+                chunk_ordinal_in_section INTEGER NOT NULL DEFAULT 0,
                 heading_path TEXT NOT NULL,
                 chunk_hash TEXT NOT NULL,
                 text TEXT NOT NULL,
+                start_line INTEGER NOT NULL DEFAULT 0,
+                end_line INTEGER NOT NULL DEFAULT 0,
                 embedding_json TEXT NOT NULL,
                 FOREIGN KEY(doc_path) REFERENCES documents(doc_path) ON DELETE CASCADE
             );
@@ -103,6 +109,7 @@ impl IndexDatabase {
             "#,
         )?;
         self.ensure_document_columns(&conn)?;
+        self.ensure_section_columns(&conn)?;
         self.ensure_chunk_columns(&conn)?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_chunks_section_id ON chunks(section_id)",
@@ -173,6 +180,42 @@ impl IndexDatabase {
         Ok(count > 0)
     }
 
+    pub fn has_section_anchors_for_doc(&self, doc_path: &str) -> Result<bool> {
+        let conn = self.open()?;
+        let count = conn.query_row(
+            "SELECT COUNT(*) FROM sections WHERE doc_path = ?1",
+            params![doc_path],
+            |row| row.get::<_, i64>(0),
+        )?;
+        if count == 0 {
+            return Ok(false);
+        }
+        let anchored = conn.query_row(
+            "SELECT COUNT(*) FROM sections WHERE doc_path = ?1 AND heading_line > 0 AND body_start_line > 0 AND end_line >= body_start_line",
+            params![doc_path],
+            |row| row.get::<_, i64>(0),
+        )?;
+        Ok(anchored == count)
+    }
+
+    pub fn has_chunk_anchors_for_doc(&self, doc_path: &str) -> Result<bool> {
+        let conn = self.open()?;
+        let count = conn.query_row(
+            "SELECT COUNT(*) FROM chunks WHERE doc_path = ?1",
+            params![doc_path],
+            |row| row.get::<_, i64>(0),
+        )?;
+        if count == 0 {
+            return Ok(false);
+        }
+        let anchored = conn.query_row(
+            "SELECT COUNT(*) FROM chunks WHERE doc_path = ?1 AND start_line > 0 AND end_line >= start_line",
+            params![doc_path],
+            |row| row.get::<_, i64>(0),
+        )?;
+        Ok(anchored == count)
+    }
+
     /// 用事务替换单个文档、其 section、各层向量及全部块。
     pub fn replace_document(
         &self,
@@ -207,8 +250,8 @@ impl IndexDatabase {
 
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO sections(section_id, doc_path, ordinal, heading_path, heading_level, parent_heading_path, body_text, first_paragraph, section_hash) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO sections(section_id, doc_path, ordinal, heading_path, heading_level, parent_heading_path, body_text, first_paragraph, section_hash, heading_line, body_start_line, end_line) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             )?;
             for section in sections {
                 stmt.execute(params![
@@ -221,6 +264,9 @@ impl IndexDatabase {
                     section.body_text,
                     section.first_paragraph,
                     section.section_hash,
+                    section.heading_line as i64,
+                    section.body_start_line as i64,
+                    section.end_line as i64,
                 ])?;
             }
         }
@@ -256,8 +302,8 @@ impl IndexDatabase {
 
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO chunks(chunk_id, section_id, doc_path, ordinal, heading_path, chunk_hash, text, embedding_json) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO chunks(chunk_id, section_id, doc_path, ordinal, chunk_ordinal_in_section, heading_path, chunk_hash, text, start_line, end_line, embedding_json) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             )?;
             for chunk in chunks {
                 stmt.execute(params![
@@ -265,9 +311,12 @@ impl IndexDatabase {
                     chunk.section_id,
                     chunk.doc_path,
                     chunk.ordinal,
+                    chunk.chunk_ordinal_in_section,
                     chunk.heading_path,
                     chunk.chunk_hash,
                     chunk.text,
+                    chunk.start_line as i64,
+                    chunk.end_line as i64,
                     serde_json::to_string(&chunk.embedding)?,
                 ])?;
             }
@@ -348,14 +397,14 @@ impl IndexDatabase {
     pub fn load_all_chunks(&self) -> Result<Vec<ChunkRecord>> {
         let conn = self.open()?;
         let mut stmt = conn.prepare(
-            "SELECT chunk_id, section_id, doc_path, ordinal, heading_path, chunk_hash, text, embedding_json \
+            "SELECT chunk_id, section_id, doc_path, ordinal, chunk_ordinal_in_section, heading_path, chunk_hash, text, start_line, end_line, embedding_json \
              FROM chunks ORDER BY doc_path, ordinal",
         )?;
         let rows = stmt.query_map([], |row| {
-            let embedding_json: String = row.get(7)?;
+            let embedding_json: String = row.get(10)?;
             let embedding: Vec<f32> = serde_json::from_str(&embedding_json).map_err(|err| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    7,
+                    10,
                     rusqlite::types::Type::Text,
                     Box::new(err),
                 )
@@ -366,9 +415,12 @@ impl IndexDatabase {
                 section_id: row.get(1)?,
                 doc_path: row.get(2)?,
                 ordinal: row.get(3)?,
-                heading_path: row.get(4)?,
-                chunk_hash: row.get(5)?,
-                text: row.get(6)?,
+                chunk_ordinal_in_section: row.get(4)?,
+                heading_path: row.get(5)?,
+                chunk_hash: row.get(6)?,
+                text: row.get(7)?,
+                start_line: row.get::<_, i64>(8)? as usize,
+                end_line: row.get::<_, i64>(9)? as usize,
                 embedding,
             })
         })?;
@@ -410,6 +462,36 @@ impl IndexDatabase {
             records.push(row?);
         }
         Ok(records)
+    }
+
+    pub fn load_all_sections(&self) -> Result<Vec<SectionRecord>> {
+        let conn = self.open()?;
+        let mut stmt = conn.prepare(
+            "SELECT section_id, doc_path, ordinal, heading_path, heading_level, parent_heading_path, body_text, first_paragraph, section_hash, heading_line, body_start_line, end_line \
+             FROM sections ORDER BY doc_path, ordinal",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SectionRecord {
+                section_id: row.get(0)?,
+                doc_path: row.get(1)?,
+                ordinal: row.get(2)?,
+                heading_path: row.get(3)?,
+                heading_level: row.get(4)?,
+                parent_heading_path: row.get(5)?,
+                body_text: row.get(6)?,
+                first_paragraph: row.get(7)?,
+                section_hash: row.get(8)?,
+                heading_line: row.get::<_, i64>(9)? as usize,
+                body_start_line: row.get::<_, i64>(10)? as usize,
+                end_line: row.get::<_, i64>(11)? as usize,
+            })
+        })?;
+
+        let mut sections = Vec::new();
+        for row in rows {
+            sections.push(row?);
+        }
+        Ok(sections)
     }
 
     pub fn load_all_doc_embeddings(&self) -> Result<Vec<DocumentEmbeddingRecord>> {
@@ -491,7 +573,7 @@ impl IndexDatabase {
     pub fn load_sections_by_doc(&self, doc_path: &str) -> Result<Vec<SectionRecord>> {
         let conn = self.open()?;
         let mut stmt = conn.prepare(
-            "SELECT section_id, doc_path, ordinal, heading_path, heading_level, parent_heading_path, body_text, first_paragraph, section_hash \
+            "SELECT section_id, doc_path, ordinal, heading_path, heading_level, parent_heading_path, body_text, first_paragraph, section_hash, heading_line, body_start_line, end_line \
              FROM sections WHERE doc_path = ?1 ORDER BY ordinal",
         )?;
         let rows = stmt.query_map(params![doc_path], |row| {
@@ -505,6 +587,9 @@ impl IndexDatabase {
                 body_text: row.get(6)?,
                 first_paragraph: row.get(7)?,
                 section_hash: row.get(8)?,
+                heading_line: row.get::<_, i64>(9)? as usize,
+                body_start_line: row.get::<_, i64>(10)? as usize,
+                end_line: row.get::<_, i64>(11)? as usize,
             })
         })?;
 
@@ -522,7 +607,7 @@ impl IndexDatabase {
     ) -> Result<Option<SectionRecord>> {
         let conn = self.open()?;
         conn.query_row(
-            "SELECT section_id, doc_path, ordinal, heading_path, heading_level, parent_heading_path, body_text, first_paragraph, section_hash \
+            "SELECT section_id, doc_path, ordinal, heading_path, heading_level, parent_heading_path, body_text, first_paragraph, section_hash, heading_line, body_start_line, end_line \
              FROM sections WHERE doc_path = ?1 AND heading_path = ?2 LIMIT 1",
             params![doc_path, heading_path],
             |row| {
@@ -536,6 +621,9 @@ impl IndexDatabase {
                     body_text: row.get(6)?,
                     first_paragraph: row.get(7)?,
                     section_hash: row.get(8)?,
+                    heading_line: row.get::<_, i64>(9)? as usize,
+                    body_start_line: row.get::<_, i64>(10)? as usize,
+                    end_line: row.get::<_, i64>(11)? as usize,
                 })
             },
         )
@@ -630,19 +718,58 @@ impl IndexDatabase {
         Ok(())
     }
 
+    fn ensure_section_columns(&self, conn: &Connection) -> Result<()> {
+        let mut stmt = conn.prepare("PRAGMA table_info(sections)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let columns = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        if !columns.iter().any(|name| name == "heading_line") {
+            conn.execute(
+                "ALTER TABLE sections ADD COLUMN heading_line INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !columns.iter().any(|name| name == "body_start_line") {
+            conn.execute(
+                "ALTER TABLE sections ADD COLUMN body_start_line INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !columns.iter().any(|name| name == "end_line") {
+            conn.execute(
+                "ALTER TABLE sections ADD COLUMN end_line INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        Ok(())
+    }
     fn ensure_chunk_columns(&self, conn: &Connection) -> Result<()> {
         let mut stmt = conn.prepare("PRAGMA table_info(chunks)")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-        let mut has_section_id = false;
-        for row in rows {
-            if row? == "section_id" {
-                has_section_id = true;
-                break;
-            }
-        }
-        if !has_section_id {
+        let columns = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        if !columns.iter().any(|name| name == "section_id") {
             conn.execute(
                 "ALTER TABLE chunks ADD COLUMN section_id TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        if !columns
+            .iter()
+            .any(|name| name == "chunk_ordinal_in_section")
+        {
+            conn.execute(
+                "ALTER TABLE chunks ADD COLUMN chunk_ordinal_in_section INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !columns.iter().any(|name| name == "start_line") {
+            conn.execute(
+                "ALTER TABLE chunks ADD COLUMN start_line INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !columns.iter().any(|name| name == "end_line") {
+            conn.execute(
+                "ALTER TABLE chunks ADD COLUMN end_line INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
         }

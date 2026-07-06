@@ -12,6 +12,27 @@ pub struct MarkdownDocument {
     pub metadata: Option<DocumentMetadata>,
     pub has_frontmatter: bool,
     pub metadata_parse_error: Option<String>,
+    pub content_start_line: usize,
+    pub frontmatter_span: Option<LineSpan>,
+}
+
+/// 原始 Markdown 文件中的 1-based 闭区间行范围。
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct LineSpan {
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+/// 面向 agent 的源文件定位句柄；可直接映射到 `read(path:start-end)`。
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct SourceAnchor {
+    pub kind: String,
+    pub path: String,
+    pub span: Option<LineSpan>,
+    pub heading_path: Option<String>,
+    pub heading_level: Option<i64>,
+    pub section_ordinal: Option<i64>,
+    pub chunk_ordinal: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -21,13 +42,19 @@ pub struct SectionDraft {
     pub parent_heading_path: String,
     pub body_text: String,
     pub first_paragraph: String,
+    pub heading_line: usize,
+    pub body_start_line: usize,
+    pub end_line: usize,
 }
 
 #[derive(Debug, Clone)]
 pub struct ChunkDraft {
     pub section_ordinal: i64,
+    pub chunk_ordinal_in_section: i64,
     pub heading_path: String,
     pub text: String,
+    pub start_line: usize,
+    pub end_line: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +68,9 @@ pub struct SectionRecord {
     pub body_text: String,
     pub first_paragraph: String,
     pub section_hash: String,
+    pub heading_line: usize,
+    pub body_start_line: usize,
+    pub end_line: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -49,9 +79,12 @@ pub struct ChunkRecord {
     pub section_id: String,
     pub doc_path: String,
     pub ordinal: i64,
+    pub chunk_ordinal_in_section: i64,
     pub heading_path: String,
     pub chunk_hash: String,
     pub text: String,
+    pub start_line: usize,
+    pub end_line: usize,
     pub embedding: Vec<f32>,
 }
 
@@ -165,6 +198,7 @@ pub struct RelatedHit {
     pub edge_type: String,
     pub weight: f32,
     pub why: String,
+    pub anchor: Option<SourceAnchor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -180,6 +214,7 @@ pub struct SearchHit {
     pub heading_path: String,
     pub score: f32,
     pub text: String,
+    pub anchor: SourceAnchor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -195,6 +230,7 @@ pub struct SectionSearchHit {
     pub heading_path: String,
     pub score: f32,
     pub first_paragraph: String,
+    pub anchor: SourceAnchor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -217,6 +253,7 @@ pub struct SectionOutlineItem {
     pub heading_level: i64,
     pub parent_heading_path: String,
     pub first_paragraph: String,
+    pub anchor: SourceAnchor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -235,6 +272,7 @@ pub struct SectionResponse {
     pub content: String,
     pub previous_heading_path: Option<String>,
     pub next_heading_path: Option<String>,
+    pub anchor: SourceAnchor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -284,6 +322,8 @@ pub struct MetadataTemplateResponse {
     pub has_frontmatter: bool,
     pub metadata: DocumentMetadata,
     pub frontmatter: String,
+    pub frontmatter_span: Option<LineSpan>,
+    pub insert_before_line: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -294,6 +334,10 @@ pub struct MetadataCheckResponse {
     pub parse_error: Option<String>,
     pub metadata: Option<DocumentMetadata>,
     pub issues: Vec<MetadataLintIssue>,
+    pub frontmatter_span: Option<LineSpan>,
+    pub insert_before_line: usize,
+    pub error_count: usize,
+    pub warning_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -304,6 +348,10 @@ pub struct MetadataWriteResponse {
     pub metadata: DocumentMetadata,
     pub frontmatter: String,
     pub issues: Vec<MetadataLintIssue>,
+    pub frontmatter_span: Option<LineSpan>,
+    pub insert_before_line: usize,
+    pub error_count: usize,
+    pub warning_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -10,7 +10,7 @@ use walkdir::{DirEntry, WalkDir};
 use crate::{
     config::AppConfig,
     model::{
-        ChunkDraft, DocumentMetadata, MarkdownDocument, MetadataBatchItem,
+        ChunkDraft, DocumentMetadata, LineSpan, MarkdownDocument, MetadataBatchItem,
         MetadataBatchWriteResponse, MetadataCheckResponse, MetadataLintDocument, MetadataLintIssue,
         MetadataLintReport, MetadataPatch, MetadataTemplateResponse, MetadataWriteResponse,
         SectionDraft,
@@ -109,6 +109,8 @@ pub fn metadata_template_for_document(
         has_frontmatter: doc.has_frontmatter,
         metadata,
         frontmatter,
+        frontmatter_span: doc.frontmatter_span,
+        insert_before_line: 1,
     })
 }
 
@@ -116,6 +118,7 @@ pub fn metadata_template_for_document(
 pub fn check_metadata_document(root: &Path, path: &Path) -> Result<MetadataCheckResponse> {
     let doc = load_document(root, path, true)?;
     let lint = lint_metadata_document(root, &doc);
+    let (error_count, warning_count) = count_issue_severities(&lint.issues);
     Ok(MetadataCheckResponse {
         path: doc.relative_path,
         has_frontmatter: doc.has_frontmatter,
@@ -123,6 +126,10 @@ pub fn check_metadata_document(root: &Path, path: &Path) -> Result<MetadataCheck
         parse_error: doc.metadata_parse_error,
         metadata: doc.metadata,
         issues: lint.issues,
+        frontmatter_span: doc.frontmatter_span,
+        insert_before_line: 1,
+        error_count,
+        warning_count,
     })
 }
 
@@ -154,6 +161,10 @@ pub fn write_metadata_document(
         frontmatter: render_frontmatter(&metadata)?,
         metadata,
         issues: check.issues,
+        frontmatter_span: check.frontmatter_span,
+        insert_before_line: check.insert_before_line,
+        error_count: check.error_count,
+        warning_count: check.warning_count,
     })
 }
 
@@ -218,10 +229,17 @@ pub fn load_document(
         .collect::<Vec<_>>()
         .join("/");
 
-    let (content, metadata, has_frontmatter, metadata_parse_error) = if parse_frontmatter_enabled {
+    let (
+        content,
+        metadata,
+        has_frontmatter,
+        metadata_parse_error,
+        content_start_line,
+        frontmatter_span,
+    ) = if parse_frontmatter_enabled {
         parse_document_content(&raw_content)
     } else {
-        (raw_content.clone(), None, false, None)
+        (raw_content.clone(), None, false, None, 1, None)
     };
 
     Ok(MarkdownDocument {
@@ -232,6 +250,8 @@ pub fn load_document(
         metadata,
         has_frontmatter,
         metadata_parse_error,
+        content_start_line,
+        frontmatter_span,
     })
 }
 
@@ -239,18 +259,21 @@ pub fn load_document(
 pub fn build_sections(doc: &MarkdownDocument) -> Vec<SectionDraft> {
     let mut sections = Vec::new();
     let mut headings: Vec<String> = Vec::new();
-    let mut current_body = Vec::new();
+    let mut current_body: Vec<(usize, &str)> = Vec::new();
     let mut current_heading = String::new();
     let mut current_level = 0usize;
     let mut current_parent = String::new();
+    let mut current_heading_line = doc.content_start_line;
 
-    for line in doc.content.lines() {
+    for (index, line) in doc.content.lines().enumerate() {
+        let line_number = doc.content_start_line + index;
         if let Some((level, heading)) = parse_heading(line) {
             flush_section(
                 &mut sections,
                 &current_heading,
                 current_level,
                 &current_parent,
+                current_heading_line,
                 &current_body,
             );
             current_body.clear();
@@ -260,8 +283,9 @@ pub fn build_sections(doc: &MarkdownDocument) -> Vec<SectionDraft> {
             headings.push(heading.to_string());
             current_heading = headings.join(" > ");
             current_level = level;
+            current_heading_line = line_number;
         } else {
-            current_body.push(line);
+            current_body.push((line_number, line));
         }
     }
 
@@ -270,6 +294,7 @@ pub fn build_sections(doc: &MarkdownDocument) -> Vec<SectionDraft> {
         &current_heading,
         current_level,
         &current_parent,
+        current_heading_line,
         &current_body,
     );
     sections
@@ -290,7 +315,15 @@ pub fn chunk_document(doc: &MarkdownDocument, chunk_char_limit: usize) -> Vec<Ch
     }
 
     if chunks.is_empty() && !doc.content.trim().is_empty() {
-        chunks.push(build_chunk(doc, 0, "", doc.content.trim()));
+        chunks.push(build_chunk(
+            doc,
+            0,
+            0,
+            "",
+            doc.content.trim(),
+            doc.content_start_line,
+            doc.content_start_line + doc.content.lines().count().saturating_sub(1),
+        ));
     }
 
     chunks
@@ -298,7 +331,14 @@ pub fn chunk_document(doc: &MarkdownDocument, chunk_char_limit: usize) -> Vec<Ch
 
 fn parse_document_content(
     raw_content: &str,
-) -> (String, Option<DocumentMetadata>, bool, Option<String>) {
+) -> (
+    String,
+    Option<DocumentMetadata>,
+    bool,
+    Option<String>,
+    usize,
+    Option<LineSpan>,
+) {
     let Some(frontmatter) = extract_frontmatter_block(raw_content) else {
         if starts_with_frontmatter_delimiter(raw_content) {
             return (
@@ -309,18 +349,38 @@ fn parse_document_content(
                     "frontmatter opening delimiter found but closing delimiter is missing"
                         .to_string(),
                 ),
+                1,
+                None,
             );
         }
-        return (raw_content.to_string(), None, false, None);
+        return (raw_content.to_string(), None, false, None, 1, None);
     };
 
     let body = raw_content[frontmatter.body_start..].to_string();
+    let frontmatter_span = Some(LineSpan {
+        start_line: frontmatter.start_line,
+        end_line: frontmatter.end_line,
+    });
     match serde_yaml::from_str::<DocumentMetadata>(frontmatter.yaml) {
         Ok(mut metadata) => {
             normalize_metadata(&mut metadata);
-            (body, Some(metadata), true, None)
+            (
+                body,
+                Some(metadata),
+                true,
+                None,
+                frontmatter.body_start_line,
+                frontmatter_span,
+            )
         }
-        Err(err) => (body, None, true, Some(err.to_string())),
+        Err(err) => (
+            body,
+            None,
+            true,
+            Some(err.to_string()),
+            frontmatter.body_start_line,
+            frontmatter_span,
+        ),
     }
 }
 
@@ -684,60 +744,81 @@ fn chunk_section(
     section: &SectionDraft,
     chunk_char_limit: usize,
 ) -> Vec<ChunkDraft> {
-    let paragraphs = split_paragraphs(&section.body_text);
+    let paragraphs = split_paragraph_slices(&section.body_text, section.body_start_line);
     let mut chunks = Vec::new();
     let mut current = String::new();
+    let mut current_start_line = 0usize;
+    let mut current_end_line = 0usize;
+    let mut chunk_ordinal_in_section = 0i64;
 
     for paragraph in paragraphs {
-        let paragraph = paragraph.trim();
-        if paragraph.is_empty() {
+        let paragraph_text = paragraph.text.trim();
+        if paragraph_text.is_empty() {
             continue;
         }
 
-        let candidate_len = current.len() + paragraph.len() + 2;
+        let candidate_len = current.len() + paragraph_text.len() + 2;
         if !current.is_empty() && candidate_len > chunk_char_limit {
             chunks.push(build_chunk(
                 doc,
                 section_ordinal,
+                chunk_ordinal_in_section,
                 &section.heading_path,
                 &current,
+                current_start_line,
+                current_end_line,
             ));
+            chunk_ordinal_in_section += 1;
             current.clear();
         }
 
-        if paragraph.len() > chunk_char_limit {
+        if paragraph_text.len() > chunk_char_limit {
             if !current.is_empty() {
                 chunks.push(build_chunk(
                     doc,
                     section_ordinal,
+                    chunk_ordinal_in_section,
                     &section.heading_path,
                     &current,
+                    current_start_line,
+                    current_end_line,
                 ));
+                chunk_ordinal_in_section += 1;
                 current.clear();
             }
-            for piece in split_long_text(paragraph, chunk_char_limit) {
+            for piece in split_long_text(paragraph_text, chunk_char_limit) {
                 chunks.push(build_chunk(
                     doc,
                     section_ordinal,
+                    chunk_ordinal_in_section,
                     &section.heading_path,
                     &piece,
+                    paragraph.start_line,
+                    paragraph.end_line,
                 ));
+                chunk_ordinal_in_section += 1;
             }
             continue;
         }
 
-        if !current.is_empty() {
+        if current.is_empty() {
+            current_start_line = paragraph.start_line;
+        } else {
             current.push_str("\n\n");
         }
-        current.push_str(paragraph);
+        current_end_line = paragraph.end_line;
+        current.push_str(paragraph_text);
     }
 
     if !current.trim().is_empty() {
         chunks.push(build_chunk(
             doc,
             section_ordinal,
+            chunk_ordinal_in_section,
             &section.heading_path,
             &current,
+            current_start_line,
+            current_end_line,
         ));
     }
 
@@ -747,8 +828,11 @@ fn chunk_section(
 fn build_chunk(
     doc: &MarkdownDocument,
     section_ordinal: i64,
+    chunk_ordinal_in_section: i64,
     heading_path: &str,
     body: &str,
+    start_line: usize,
+    end_line: usize,
 ) -> ChunkDraft {
     let mut text = String::new();
     text.push_str("Path: ");
@@ -765,8 +849,11 @@ fn build_chunk(
 
     ChunkDraft {
         section_ordinal,
+        chunk_ordinal_in_section,
         heading_path: heading_path.to_string(),
         text,
+        start_line,
+        end_line,
     }
 }
 
@@ -775,13 +862,29 @@ fn flush_section(
     heading_path: &str,
     heading_level: usize,
     parent_heading_path: &str,
-    lines: &[&str],
+    heading_line: usize,
+    lines: &[(usize, &str)],
 ) {
-    let body_text = lines.join("\n").trim().to_string();
+    let body_text = lines
+        .iter()
+        .map(|(_, line)| *line)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
     if body_text.is_empty() {
         return;
     }
 
+    let body_start_line = lines
+        .iter()
+        .find_map(|(line_number, line)| (!line.trim().is_empty()).then_some(*line_number))
+        .unwrap_or(heading_line);
+    let end_line = lines
+        .iter()
+        .rev()
+        .find_map(|(line_number, line)| (!line.trim().is_empty()).then_some(*line_number))
+        .unwrap_or(body_start_line);
     let first_paragraph = split_paragraphs(&body_text)
         .into_iter()
         .next()
@@ -792,6 +895,13 @@ fn flush_section(
         parent_heading_path: parent_heading_path.to_string(),
         body_text,
         first_paragraph,
+        heading_line: if heading_path.is_empty() {
+            body_start_line
+        } else {
+            heading_line
+        },
+        body_start_line,
+        end_line,
     });
 }
 
@@ -809,25 +919,10 @@ fn parse_heading(line: &str) -> Option<(usize, &str)> {
 }
 
 fn split_paragraphs(body: &str) -> Vec<String> {
-    let mut paragraphs = Vec::new();
-    let mut current = Vec::new();
-
-    for line in body.lines() {
-        if line.trim().is_empty() {
-            if !current.is_empty() {
-                paragraphs.push(current.join("\n"));
-                current.clear();
-            }
-        } else {
-            current.push(line.to_string());
-        }
-    }
-
-    if !current.is_empty() {
-        paragraphs.push(current.join("\n"));
-    }
-
-    paragraphs
+    split_paragraph_slices(body, 1)
+        .into_iter()
+        .map(|paragraph| paragraph.text)
+        .collect()
 }
 
 fn split_long_text(text: &str, limit: usize) -> Vec<String> {
@@ -840,6 +935,57 @@ fn split_long_text(text: &str, limit: usize) -> Vec<String> {
         .chunks(limit)
         .map(|chunk| chunk.iter().collect::<String>())
         .collect()
+}
+
+fn split_paragraph_slices(body: &str, base_line: usize) -> Vec<ParagraphSlice> {
+    let mut paragraphs = Vec::new();
+    let mut current = Vec::new();
+    let mut current_start_line = 0usize;
+    let mut current_end_line = 0usize;
+
+    for (index, line) in body.lines().enumerate() {
+        let line_number = base_line + index;
+        if line.trim().is_empty() {
+            if !current.is_empty() {
+                paragraphs.push(ParagraphSlice {
+                    text: current.join("\n"),
+                    start_line: current_start_line,
+                    end_line: current_end_line,
+                });
+                current.clear();
+            }
+            continue;
+        }
+
+        if current.is_empty() {
+            current_start_line = line_number;
+        }
+        current_end_line = line_number;
+        current.push(line.to_string());
+    }
+
+    if !current.is_empty() {
+        paragraphs.push(ParagraphSlice {
+            text: current.join("\n"),
+            start_line: current_start_line,
+            end_line: current_end_line,
+        });
+    }
+
+    paragraphs
+}
+
+fn count_issue_severities(issues: &[MetadataLintIssue]) -> (usize, usize) {
+    let mut error_count = 0usize;
+    let mut warning_count = 0usize;
+    for issue in issues {
+        match issue.severity.as_str() {
+            "error" => error_count += 1,
+            "warning" => warning_count += 1,
+            _ => {}
+        }
+    }
+    (error_count, warning_count)
 }
 
 fn should_descend(entry: &DirEntry, exclude_hidden: bool, exclude_obsidian_dir: bool) -> bool {
@@ -869,6 +1015,7 @@ fn extract_frontmatter_block(raw_content: &str) -> Option<FrontmatterBlock<'_>> 
 
     let yaml_start = first.len();
     let mut cursor = yaml_start;
+    let mut line_number = 2usize;
     for line in raw_content[yaml_start..].split_inclusive('\n') {
         let line_start = cursor;
         let line_end = cursor + line.len();
@@ -876,9 +1023,13 @@ fn extract_frontmatter_block(raw_content: &str) -> Option<FrontmatterBlock<'_>> 
             return Some(FrontmatterBlock {
                 yaml: &raw_content[yaml_start..line_start],
                 body_start: line_end,
+                start_line: 1,
+                end_line: line_number,
+                body_start_line: line_number + 1,
             });
         }
         cursor = line_end;
+        line_number += 1;
     }
 
     None
@@ -1008,6 +1159,15 @@ fn warning_issue(code: &str, message: String) -> MetadataLintIssue {
 struct FrontmatterBlock<'a> {
     yaml: &'a str,
     body_start: usize,
+    start_line: usize,
+    end_line: usize,
+    body_start_line: usize,
+}
+
+struct ParagraphSlice {
+    text: String,
+    start_line: usize,
+    end_line: usize,
 }
 
 #[cfg(test)]
@@ -1049,6 +1209,8 @@ mod tests {
             metadata: None,
             has_frontmatter: false,
             metadata_parse_error: None,
+            content_start_line: 1,
+            frontmatter_span: None,
         };
 
         let chunks = chunk_document(&doc, 32);
@@ -1067,6 +1229,8 @@ mod tests {
             metadata: None,
             has_frontmatter: false,
             metadata_parse_error: None,
+            content_start_line: 1,
+            frontmatter_span: None,
         };
 
         let sections = build_sections(&doc);
@@ -1079,6 +1243,90 @@ mod tests {
         assert_eq!(sections[2].parent_heading_path, "A");
         assert_eq!(sections[3].heading_path, "A > B > C");
         assert_eq!(sections[3].parent_heading_path, "A > B");
+    }
+
+    #[test]
+    fn load_document_tracks_frontmatter_span_and_body_start() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("note.md");
+        fs::write(
+            &path,
+            "---\ntitle: Demo\ntags:\n  - cpp/memory\nsource_type: note\nsource_ref: local://demo\nstatus: draft\n---\n# Body\ncontent",
+        )
+        .unwrap();
+
+        let doc = load_document(temp.path(), &path, true).unwrap();
+        assert_eq!(
+            doc.frontmatter_span,
+            Some(LineSpan {
+                start_line: 1,
+                end_line: 8
+            })
+        );
+        assert_eq!(doc.content_start_line, 9);
+    }
+
+    #[test]
+    fn build_sections_tracks_original_line_numbers() {
+        let doc = MarkdownDocument {
+            relative_path: "demo.md".to_string(),
+            absolute_path: PathBuf::from("demo.md"),
+            raw_content: "intro\n# A\nline1\n## B\nline2\n### C\nline3".to_string(),
+            content: "intro\n# A\nline1\n## B\nline2\n### C\nline3".to_string(),
+            metadata: None,
+            has_frontmatter: false,
+            metadata_parse_error: None,
+            content_start_line: 1,
+            frontmatter_span: None,
+        };
+
+        let sections = build_sections(&doc);
+        assert_eq!(sections[0].heading_line, 1);
+        assert_eq!(sections[0].body_start_line, 1);
+        assert_eq!(sections[0].end_line, 1);
+        assert_eq!(sections[1].heading_line, 2);
+        assert_eq!(sections[1].body_start_line, 3);
+        assert_eq!(sections[1].end_line, 3);
+        assert_eq!(sections[2].heading_line, 4);
+        assert_eq!(sections[2].body_start_line, 5);
+        assert_eq!(sections[2].end_line, 5);
+        assert_eq!(sections[3].heading_line, 6);
+        assert_eq!(sections[3].body_start_line, 7);
+        assert_eq!(sections[3].end_line, 7);
+    }
+
+    #[test]
+    fn chunk_document_preserves_chunk_line_spans() {
+        let doc = MarkdownDocument {
+            relative_path: "demo.md".to_string(),
+            absolute_path: PathBuf::from("demo.md"),
+            raw_content: "# A\nalpha\n\nbeta gamma\n## B\nomega".to_string(),
+            content: "# A\nalpha\n\nbeta gamma\n## B\nomega".to_string(),
+            metadata: None,
+            has_frontmatter: false,
+            metadata_parse_error: None,
+            content_start_line: 1,
+            frontmatter_span: None,
+        };
+
+        let chunks = chunk_document(&doc, 10);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!((chunks[0].start_line, chunks[0].end_line), (2, 2));
+        assert_eq!((chunks[1].start_line, chunks[1].end_line), (4, 4));
+        assert_eq!((chunks[2].start_line, chunks[2].end_line), (6, 6));
+    }
+
+    #[test]
+    fn check_metadata_reports_insert_position_when_frontmatter_missing() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("note.md");
+        fs::write(&path, "# Demo\nbody").unwrap();
+
+        let response = check_metadata_document(temp.path(), &path).unwrap();
+        assert_eq!(response.frontmatter_span, None);
+        assert_eq!(response.insert_before_line, 1);
+        assert_eq!(response.error_count, 1);
+        assert_eq!(response.warning_count, 0);
     }
 
     #[test]

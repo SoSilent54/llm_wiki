@@ -14,10 +14,11 @@ use crate::{
     markdown,
     model::{
         DocumentListItem, DocumentOutlineResponse, DocumentResponse, GraphEdgeRecord,
-        GraphNodeRecord, LibraryOverviewResponse, ListDocumentsResponse,
+        GraphNodeRecord, LibraryOverviewResponse, LineSpan, ListDocumentsResponse,
         MetadataBatchWriteResponse, MetadataCheckResponse, MetadataPatch, MetadataTemplateResponse,
         MetadataWriteResponse, RelatedHit, RelatedResponse, SearchHit, SearchResponse,
-        SectionOutlineItem, SectionResponse, SectionSearchHit, SectionSearchResponse,
+        SectionOutlineItem, SectionRecord, SectionResponse, SectionSearchHit,
+        SectionSearchResponse, SourceAnchor,
     },
 };
 
@@ -254,10 +255,11 @@ impl KnowledgeService {
         let mut hits = chunks
             .into_iter()
             .map(|chunk| SearchHit {
-                doc_path: chunk.doc_path,
-                heading_path: chunk.heading_path,
+                doc_path: chunk.doc_path.clone(),
+                heading_path: chunk.heading_path.clone(),
                 score: cosine_similarity(&query_embedding, &chunk.embedding),
-                text: chunk.text,
+                text: chunk.text.clone(),
+                anchor: evidence_anchor(&chunk),
             })
             .collect::<Vec<_>>();
 
@@ -278,17 +280,26 @@ impl KnowledgeService {
         limit: Option<usize>,
     ) -> Result<SectionSearchResponse> {
         let query_embedding = self.embedder.embed_query(query)?;
-        let sections = self.db.load_all_section_embeddings()?;
-        let total_sections = sections.len();
+        let sections = self.db.load_all_sections()?;
+        let section_map = sections
+            .into_iter()
+            .map(|section| (section.section_id.clone(), section))
+            .collect::<HashMap<_, _>>();
+        let section_embeddings = self.db.load_all_section_embeddings()?;
+        let total_sections = section_embeddings.len();
         let limit = limit.unwrap_or(self.config.search_limit);
 
-        let mut hits = sections
+        let mut hits = section_embeddings
             .into_iter()
-            .map(|section| SectionSearchHit {
-                doc_path: section.doc_path,
-                heading_path: section.heading_path,
-                score: cosine_similarity(&query_embedding, &section.embedding),
-                first_paragraph: section.first_paragraph,
+            .filter_map(|section| {
+                let record = section_map.get(&section.section_id)?;
+                Some(SectionSearchHit {
+                    doc_path: section.doc_path,
+                    heading_path: section.heading_path,
+                    score: cosine_similarity(&query_embedding, &section.embedding),
+                    first_paragraph: section.first_paragraph,
+                    anchor: section_anchor(record),
+                })
             })
             .collect::<Vec<_>>();
 
@@ -366,10 +377,11 @@ impl KnowledgeService {
                 .into_iter()
                 .map(|section| SectionOutlineItem {
                     ordinal: section.ordinal,
-                    heading_path: section.heading_path,
+                    heading_path: section.heading_path.clone(),
                     heading_level: section.heading_level,
-                    parent_heading_path: section.parent_heading_path,
-                    first_paragraph: section.first_paragraph,
+                    parent_heading_path: section.parent_heading_path.clone(),
+                    first_paragraph: section.first_paragraph.clone(),
+                    anchor: section_anchor(&section),
                 })
                 .collect(),
         })
@@ -417,6 +429,7 @@ impl KnowledgeService {
             next_heading_path: sections
                 .get(target_index + 1)
                 .map(|neighbor| neighbor.heading_path.clone()),
+            anchor: section_anchor(section),
         })
     }
 
@@ -545,6 +558,7 @@ fn build_related_hit(
     let Some(target) = node_map.get(&edge.dst_node_id) else {
         return Ok(None);
     };
+    let payload = parse_payload(&target.payload_json)?;
     let target_path = if target.node_type == "tag" {
         target.label.clone()
     } else {
@@ -559,6 +573,7 @@ fn build_related_hit(
         edge_type: edge.edge_type.clone(),
         weight: edge.weight,
         why: explain_edge(edge)?,
+        anchor: related_anchor(target, &payload),
     }))
 }
 
@@ -584,6 +599,73 @@ fn explain_edge(edge: &GraphEdgeRecord) -> Result<String> {
     })
 }
 
+fn section_anchor(section: &SectionRecord) -> SourceAnchor {
+    SourceAnchor {
+        kind: "section".to_string(),
+        path: section.doc_path.clone(),
+        span: Some(LineSpan {
+            start_line: section.heading_line,
+            end_line: section.end_line,
+        }),
+        heading_path: (!section.heading_path.is_empty()).then_some(section.heading_path.clone()),
+        heading_level: Some(section.heading_level),
+        section_ordinal: Some(section.ordinal),
+        chunk_ordinal: None,
+    }
+}
+
+fn evidence_anchor(chunk: &crate::model::ChunkRecord) -> SourceAnchor {
+    SourceAnchor {
+        kind: "evidence".to_string(),
+        path: chunk.doc_path.clone(),
+        span: Some(LineSpan {
+            start_line: chunk.start_line,
+            end_line: chunk.end_line,
+        }),
+        heading_path: (!chunk.heading_path.is_empty()).then_some(chunk.heading_path.clone()),
+        heading_level: None,
+        section_ordinal: None,
+        chunk_ordinal: Some(chunk.chunk_ordinal_in_section),
+    }
+}
+
+fn document_anchor(path: &str) -> SourceAnchor {
+    SourceAnchor {
+        kind: "document".to_string(),
+        path: path.to_string(),
+        span: None,
+        heading_path: None,
+        heading_level: None,
+        section_ordinal: None,
+        chunk_ordinal: None,
+    }
+}
+
+fn related_anchor(target: &GraphNodeRecord, payload: &Value) -> Option<SourceAnchor> {
+    match target.node_type.as_str() {
+        "doc" => Some(document_anchor(&target.ref_path)),
+        "section" => {
+            let ordinal = payload.get("ordinal")?.as_i64()?;
+            let heading_level = payload.get("heading_level")?.as_i64()?;
+            let heading_line = payload.get("heading_line")?.as_u64()? as usize;
+            let end_line = payload.get("end_line")?.as_u64()? as usize;
+            Some(SourceAnchor {
+                kind: "section".to_string(),
+                path: target.ref_path.clone(),
+                span: Some(LineSpan {
+                    start_line: heading_line,
+                    end_line,
+                }),
+                heading_path: (!target.ref_section.is_empty())
+                    .then_some(target.ref_section.clone()),
+                heading_level: Some(heading_level),
+                section_ordinal: Some(ordinal),
+                chunk_ordinal: None,
+            })
+        }
+        _ => None,
+    }
+}
 fn parse_payload(payload_json: &str) -> Result<Value> {
     serde_json::from_str(payload_json).map_err(Into::into)
 }

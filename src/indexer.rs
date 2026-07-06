@@ -92,6 +92,9 @@ impl<'a> Indexer<'a> {
                         body_text: section.body_text.clone(),
                         first_paragraph: section.first_paragraph.clone(),
                         section_hash,
+                        heading_line: section.heading_line,
+                        body_start_line: section.body_start_line,
+                        end_line: section.end_line,
                     }
                 })
                 .collect::<Vec<_>>();
@@ -101,9 +104,13 @@ impl<'a> Indexer<'a> {
             let has_doc_embedding = self.db.has_doc_embedding_for_doc(&doc.relative_path)?;
             let has_section_embeddings =
                 self.db.has_section_embeddings_for_doc(&doc.relative_path)?;
+            let has_section_anchors = self.db.has_section_anchors_for_doc(&doc.relative_path)?;
+            let has_chunk_anchors = self.db.has_chunk_anchors_for_doc(&doc.relative_path)?;
             if has_sections
                 && has_doc_embedding
                 && has_section_embeddings
+                && has_section_anchors
+                && has_chunk_anchors
                 && previous_manifest.is_some_and(|manifest| {
                     manifest.file_hash == file_hash
                         && manifest.embedding_fingerprint == embedding_fingerprint
@@ -175,9 +182,12 @@ impl<'a> Indexer<'a> {
                         section_id,
                         doc_path: doc.relative_path.clone(),
                         ordinal: ordinal as i64,
+                        chunk_ordinal_in_section: chunk.chunk_ordinal_in_section,
                         heading_path: chunk.heading_path,
                         chunk_hash,
                         text: chunk.text,
+                        start_line: chunk.start_line,
+                        end_line: chunk.end_line,
                         embedding,
                     }
                 })
@@ -419,6 +429,9 @@ fn build_graph_records(
                     payload_json: serde_json::to_string(&json!({
                         "ordinal": section.ordinal,
                         "heading_level": section.heading_level,
+                        "heading_line": section.heading_line,
+                        "body_start_line": section.body_start_line,
+                        "end_line": section.end_line,
                     }))?,
                 },
             );
