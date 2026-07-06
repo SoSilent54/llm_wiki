@@ -17,3 +17,15 @@ chunk_char_limit = 1600
 search_limit = 8
 exclude_hidden = true
 exclude_obsidian_dir = true
+
+# 是否解析文件头 frontmatter 元数据；建议保持开启
+metadata_frontmatter_enabled = true
+
+# 是否构建基础图谱层（目录 / 文档 / section / tag / related）
+graph_enabled = true
+
+# 每个 doc/section 最多保留多少个语义近邻
+graph_semantic_neighbors_per_node = 6
+
+# 语义边最低相似度阈值；同顶层目录可获得小幅 boost
+graph_semantic_min_score = 0.42

@@ -19,6 +19,14 @@ pub struct AppConfig {
     pub search_limit: usize,
     pub exclude_hidden: bool,
     pub exclude_obsidian_dir: bool,
+    #[serde(default = "default_metadata_frontmatter_enabled")]
+    pub metadata_frontmatter_enabled: bool,
+    #[serde(default = "default_graph_enabled")]
+    pub graph_enabled: bool,
+    #[serde(default = "default_graph_semantic_neighbors_per_node")]
+    pub graph_semantic_neighbors_per_node: usize,
+    #[serde(default = "default_graph_semantic_min_score")]
+    pub graph_semantic_min_score: f32,
 }
 
 impl AppConfig {
@@ -78,6 +86,16 @@ impl AppConfig {
             other => format!("unknown|backend={other}"),
         }
     }
+
+    /// 生成图谱层版本指纹；结构边或规则变化时触发整图重建。
+    pub fn graph_fingerprint(&self) -> String {
+        format!(
+            "graph-v2|enabled={}|neighbors={}|min_score={:.3}|edges=contains,tagged_with,related_to,semantic_similar_*",
+            self.graph_enabled,
+            self.graph_semantic_neighbors_per_node,
+            self.graph_semantic_min_score
+        )
+    }
 }
 
 fn resolve_path(base: &Path, path: &Path) -> PathBuf {
@@ -86,4 +104,20 @@ fn resolve_path(base: &Path, path: &Path) -> PathBuf {
     } else {
         base.join(path)
     }
+}
+
+fn default_metadata_frontmatter_enabled() -> bool {
+    true
+}
+
+fn default_graph_enabled() -> bool {
+    true
+}
+
+fn default_graph_semantic_neighbors_per_node() -> usize {
+    6
+}
+
+fn default_graph_semantic_min_score() -> f32 {
+    0.42
 }

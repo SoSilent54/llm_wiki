@@ -2,22 +2,51 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Markdown 文档的编译前模型；`raw_content` 保留原文，`content` 为去 frontmatter 后正文。
 #[derive(Debug, Clone)]
 pub struct MarkdownDocument {
     pub relative_path: String,
     pub absolute_path: PathBuf,
+    pub raw_content: String,
     pub content: String,
+    pub metadata: Option<DocumentMetadata>,
+    pub has_frontmatter: bool,
+    pub metadata_parse_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SectionDraft {
+    pub heading_path: String,
+    pub heading_level: i64,
+    pub parent_heading_path: String,
+    pub body_text: String,
+    pub first_paragraph: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct ChunkDraft {
+    pub section_ordinal: i64,
     pub heading_path: String,
     pub text: String,
 }
 
 #[derive(Debug, Clone)]
+pub struct SectionRecord {
+    pub section_id: String,
+    pub doc_path: String,
+    pub ordinal: i64,
+    pub heading_path: String,
+    pub heading_level: i64,
+    pub parent_heading_path: String,
+    pub body_text: String,
+    pub first_paragraph: String,
+    pub section_hash: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct ChunkRecord {
     pub chunk_id: String,
+    pub section_id: String,
     pub doc_path: String,
     pub ordinal: i64,
     pub heading_path: String,
@@ -30,6 +59,119 @@ pub struct ChunkRecord {
 pub struct DocumentManifest {
     pub file_hash: String,
     pub embedding_fingerprint: String,
+}
+
+/// 文件头 frontmatter 的规范化表示；缺字段时以空值表示，交由 lint 规则判断。
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq, Eq)]
+pub struct DocumentMetadata {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub related: Vec<String>,
+    #[serde(default)]
+    pub source_type: String,
+    #[serde(default)]
+    pub source_ref: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_priority: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DocumentEmbeddingRecord {
+    pub doc_path: String,
+    pub embedding: Vec<f32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SectionEmbeddingRecord {
+    pub section_id: String,
+    pub doc_path: String,
+    pub heading_path: String,
+    pub first_paragraph: String,
+    pub embedding: Vec<f32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GraphNodeRecord {
+    pub node_id: String,
+    pub node_type: String,
+    pub ref_path: String,
+    pub ref_section: String,
+    pub label: String,
+    pub payload_json: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct GraphEdgeRecord {
+    pub edge_id: String,
+    pub src_node_id: String,
+    pub dst_node_id: String,
+    pub edge_type: String,
+    pub weight: f32,
+    pub evidence_json: String,
+    pub graph_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OverviewBucket {
+    pub key: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LibraryOverviewResponse {
+    pub doc_count: usize,
+    pub section_count: usize,
+    pub chunk_count: usize,
+    pub top_dirs: Vec<OverviewBucket>,
+    pub top_tags: Vec<OverviewBucket>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DocumentListItem {
+    pub path: String,
+    pub node_type: String,
+    pub title: Option<String>,
+    pub child_count: usize,
+    pub tag_sample: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListDocumentsResponse {
+    pub prefix: String,
+    pub depth: usize,
+    pub nodes: Vec<DocumentListItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RelatedHit {
+    pub target_type: String,
+    pub target_path: String,
+    pub target_heading: Option<String>,
+    pub edge_type: String,
+    pub weight: f32,
+    pub why: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RelatedResponse {
+    pub source_path: String,
+    pub source_heading_path: Option<String>,
+    pub hits: Vec<RelatedHit>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -48,9 +190,136 @@ pub struct SearchResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SectionSearchHit {
+    pub doc_path: String,
+    pub heading_path: String,
+    pub score: f32,
+    pub first_paragraph: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SectionSearchResponse {
+    pub query: String,
+    pub total_sections: usize,
+    pub hits: Vec<SectionSearchHit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DocumentResponse {
     pub path: String,
     pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SectionOutlineItem {
+    pub ordinal: i64,
+    pub heading_path: String,
+    pub heading_level: i64,
+    pub parent_heading_path: String,
+    pub first_paragraph: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DocumentOutlineResponse {
+    pub path: String,
+    pub title: Option<String>,
+    pub sections: Vec<SectionOutlineItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SectionResponse {
+    pub path: String,
+    pub heading_path: String,
+    pub heading_level: i64,
+    pub ordinal: i64,
+    pub content: String,
+    pub previous_heading_path: Option<String>,
+    pub next_heading_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MetadataLintIssue {
+    pub severity: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MetadataLintDocument {
+    pub path: String,
+    pub has_frontmatter: bool,
+    pub metadata_valid: bool,
+    pub issues: Vec<MetadataLintIssue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MetadataLintReport {
+    pub scanned_docs: usize,
+    pub documents_with_frontmatter: usize,
+    pub valid_docs: usize,
+    pub error_count: usize,
+    pub warning_count: usize,
+    pub documents: Vec<MetadataLintDocument>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+pub struct MetadataPatch {
+    pub title: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub aliases: Option<Vec<String>>,
+    pub related: Option<Vec<String>>,
+    pub source_type: Option<String>,
+    pub source_ref: Option<String>,
+    pub status: Option<String>,
+    pub domain: Option<String>,
+    pub keywords: Option<Vec<String>>,
+    pub updated_by: Option<String>,
+    pub updated_at: Option<String>,
+    pub review_priority: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MetadataTemplateResponse {
+    pub path: String,
+    pub has_frontmatter: bool,
+    pub metadata: DocumentMetadata,
+    pub frontmatter: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MetadataCheckResponse {
+    pub path: String,
+    pub has_frontmatter: bool,
+    pub metadata_valid: bool,
+    pub parse_error: Option<String>,
+    pub metadata: Option<DocumentMetadata>,
+    pub issues: Vec<MetadataLintIssue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MetadataWriteResponse {
+    pub path: String,
+    pub action: String,
+    pub metadata_valid: bool,
+    pub metadata: DocumentMetadata,
+    pub frontmatter: String,
+    pub issues: Vec<MetadataLintIssue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MetadataBatchItem {
+    pub path: String,
+    pub action: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MetadataBatchWriteResponse {
+    pub scanned_docs: usize,
+    pub updated_docs: usize,
+    pub skipped_docs: usize,
+    pub failed_docs: usize,
+    pub documents: Vec<MetadataBatchItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

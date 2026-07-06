@@ -4,9 +4,9 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Result, bail};
 #[cfg(feature = "fastembed-backend")]
 use anyhow::Context;
+use anyhow::{Result, bail};
 #[cfg(feature = "fastembed-backend")]
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 
@@ -280,6 +280,10 @@ mod tests {
             search_limit: 8,
             exclude_hidden: true,
             exclude_obsidian_dir: true,
+            metadata_frontmatter_enabled: true,
+            graph_enabled: true,
+            graph_semantic_neighbors_per_node: 6,
+            graph_semantic_min_score: 0.42,
         };
         let engine = EmbeddingEngine::new(&config).unwrap();
         let lhs = engine.embed_query("coverage planner").unwrap();
