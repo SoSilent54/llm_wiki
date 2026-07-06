@@ -241,12 +241,6 @@ pub struct SectionSearchResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct DocumentResponse {
-    pub path: String,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SectionOutlineItem {
     pub ordinal: i64,
     pub heading_path: String,
@@ -261,18 +255,6 @@ pub struct DocumentOutlineResponse {
     pub path: String,
     pub title: Option<String>,
     pub sections: Vec<SectionOutlineItem>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct SectionResponse {
-    pub path: String,
-    pub heading_path: String,
-    pub heading_level: i64,
-    pub ordinal: i64,
-    pub content: String,
-    pub previous_heading_path: Option<String>,
-    pub next_heading_path: Option<String>,
-    pub anchor: SourceAnchor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -300,22 +282,6 @@ pub struct MetadataLintReport {
     pub documents: Vec<MetadataLintDocument>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
-pub struct MetadataPatch {
-    pub title: Option<String>,
-    pub tags: Option<Vec<String>>,
-    pub aliases: Option<Vec<String>>,
-    pub related: Option<Vec<String>>,
-    pub source_type: Option<String>,
-    pub source_ref: Option<String>,
-    pub status: Option<String>,
-    pub domain: Option<String>,
-    pub keywords: Option<Vec<String>>,
-    pub updated_by: Option<String>,
-    pub updated_at: Option<String>,
-    pub review_priority: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MetadataTemplateResponse {
     pub path: String,
@@ -338,36 +304,6 @@ pub struct MetadataCheckResponse {
     pub insert_before_line: usize,
     pub error_count: usize,
     pub warning_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct MetadataWriteResponse {
-    pub path: String,
-    pub action: String,
-    pub metadata_valid: bool,
-    pub metadata: DocumentMetadata,
-    pub frontmatter: String,
-    pub issues: Vec<MetadataLintIssue>,
-    pub frontmatter_span: Option<LineSpan>,
-    pub insert_before_line: usize,
-    pub error_count: usize,
-    pub warning_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct MetadataBatchItem {
-    pub path: String,
-    pub action: String,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct MetadataBatchWriteResponse {
-    pub scanned_docs: usize,
-    pub updated_docs: usize,
-    pub skipped_docs: usize,
-    pub failed_docs: usize,
-    pub documents: Vec<MetadataBatchItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

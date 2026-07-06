@@ -13,12 +13,10 @@ use crate::{
     indexer::Indexer,
     markdown,
     model::{
-        DocumentListItem, DocumentOutlineResponse, DocumentResponse, GraphEdgeRecord,
-        GraphNodeRecord, LibraryOverviewResponse, LineSpan, ListDocumentsResponse,
-        MetadataBatchWriteResponse, MetadataCheckResponse, MetadataPatch, MetadataTemplateResponse,
-        MetadataWriteResponse, RelatedHit, RelatedResponse, SearchHit, SearchResponse,
-        SectionOutlineItem, SectionRecord, SectionResponse, SectionSearchHit,
-        SectionSearchResponse, SourceAnchor,
+        DocumentListItem, DocumentOutlineResponse, GraphEdgeRecord, GraphNodeRecord,
+        LibraryOverviewResponse, LineSpan, ListDocumentsResponse, MetadataCheckResponse,
+        MetadataTemplateResponse, RelatedHit, RelatedResponse, SearchHit, SearchResponse,
+        SectionOutlineItem, SectionRecord, SectionSearchHit, SectionSearchResponse, SourceAnchor,
     },
 };
 
@@ -325,39 +323,6 @@ impl KnowledgeService {
         markdown::check_metadata_document(&self.config.knowledge_root, &path)
     }
 
-    /// 批量或单文档补写 metadata 模板；仅修改 Markdown 源文件。
-    pub fn apply_metadata_template(
-        &self,
-        relative_path: Option<&str>,
-        overwrite: bool,
-    ) -> Result<MetadataBatchWriteResponse> {
-        if let Some(relative_path) = relative_path {
-            let _ = self.resolve_relative_path(relative_path)?;
-        }
-        markdown::apply_metadata_template(&self.config, relative_path, overwrite)
-    }
-
-    /// 用 patch 方式写入单文档 metadata；未传字段沿用现值或推断模板值。
-    pub fn write_metadata(
-        &self,
-        relative_path: &str,
-        patch: &MetadataPatch,
-    ) -> Result<MetadataWriteResponse> {
-        let path = self.resolve_relative_path(relative_path)?;
-        markdown::write_metadata_document(&self.config.knowledge_root, &path, patch)
-    }
-
-    /// 直接返回 Markdown 原文，便于 agent 按路径精读。
-    pub fn read_document(&self, relative_path: &str) -> Result<DocumentResponse> {
-        let path = self.resolve_relative_path(relative_path)?;
-        let content = std::fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        Ok(DocumentResponse {
-            path: relative_path.to_string(),
-            content,
-        })
-    }
-
     /// 返回文档的 section 大纲，便于 agent 先看结构再精读。
     pub fn document_outline(&self, relative_path: &str) -> Result<DocumentOutlineResponse> {
         let path = self.resolve_relative_path(relative_path)?;
@@ -384,52 +349,6 @@ impl KnowledgeService {
                     anchor: section_anchor(&section),
                 })
                 .collect(),
-        })
-    }
-
-    /// 返回单个 section 正文及其相邻 section 路径。
-    pub fn read_section(
-        &self,
-        relative_path: &str,
-        heading_path: Option<&str>,
-    ) -> Result<SectionResponse> {
-        let _ = self.resolve_relative_path(relative_path)?;
-        let sections = self.db.load_sections_by_doc(relative_path)?;
-        if sections.is_empty() {
-            bail!("document has no indexed sections; run index first");
-        }
-
-        let target_index = if let Some(heading_path) = heading_path {
-            sections
-                .iter()
-                .position(|section| section.heading_path == heading_path)
-                .with_context(|| {
-                    format!(
-                        "section not found in document {}; use outline to inspect heading_path",
-                        relative_path
-                    )
-                })?
-        } else if sections[0].heading_path.is_empty() || sections.len() == 1 {
-            0
-        } else {
-            bail!("heading_path is required for multi-section documents; use outline first");
-        };
-
-        let section = &sections[target_index];
-        Ok(SectionResponse {
-            path: relative_path.to_string(),
-            heading_path: section.heading_path.clone(),
-            heading_level: section.heading_level,
-            ordinal: section.ordinal,
-            content: section.body_text.clone(),
-            previous_heading_path: target_index
-                .checked_sub(1)
-                .and_then(|index| sections.get(index))
-                .map(|neighbor| neighbor.heading_path.clone()),
-            next_heading_path: sections
-                .get(target_index + 1)
-                .map(|neighbor| neighbor.heading_path.clone()),
-            anchor: section_anchor(section),
         })
     }
 

@@ -7,10 +7,9 @@ use serde::Deserialize;
 
 use crate::{
     model::{
-        DocumentOutlineResponse, DocumentResponse, IndexStats, LibraryOverviewResponse,
-        ListDocumentsResponse, MetadataBatchWriteResponse, MetadataCheckResponse, MetadataPatch,
-        MetadataTemplateResponse, MetadataWriteResponse, RelatedResponse, SearchResponse,
-        SectionResponse, SectionSearchResponse,
+        DocumentOutlineResponse, IndexStats, LibraryOverviewResponse, ListDocumentsResponse,
+        MetadataCheckResponse, MetadataTemplateResponse, RelatedResponse, SearchResponse,
+        SectionSearchResponse,
     },
     service::KnowledgeService,
 };
@@ -24,17 +23,9 @@ struct SearchParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct ReadParams {
+struct PathParams {
     /// 相对于 knowledge_root 的 Markdown 路径
     path: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct ReadSectionParams {
-    /// 相对于 knowledge_root 的 Markdown 路径
-    path: String,
-    /// section 的 heading_path；多 section 文档建议先调 get_document_outline 获取带行号 locator 的大纲
-    heading_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -55,28 +46,6 @@ struct RelatedParams {
     limit: Option<usize>,
     /// 可选边类型过滤；例如 related_to / tagged_with / semantic_similar_*
     edge_types: Option<Vec<String>>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct MetadataPathParams {
-    /// 相对于 knowledge_root 的 Markdown 路径
-    path: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct ApplyMetadataTemplateParams {
-    /// 可选单文档路径；未传时扫描整个知识库
-    path: Option<String>,
-    /// 是否允许覆盖已有 frontmatter
-    overwrite: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct WriteMetadataParams {
-    /// 相对于 knowledge_root 的 Markdown 路径
-    path: String,
-    /// 要覆盖的 metadata 字段；未传字段沿用现值或推断模板值
-    patch: MetadataPatch,
 }
 
 #[derive(Clone)]
@@ -154,24 +123,11 @@ impl WikiMcpServer {
     }
 
     #[tool(
-        description = "Compatibility fallback: read a Markdown document from the knowledge root"
-    )]
-    fn read_document(
-        &self,
-        Parameters(ReadParams { path }): Parameters<ReadParams>,
-    ) -> Result<Json<DocumentResponse>, String> {
-        self.service
-            .read_document(&path)
-            .map(Json)
-            .map_err(|err| err.to_string())
-    }
-
-    #[tool(
         description = "Get the stored section outline of a Markdown document with line-based locators"
     )]
     fn get_document_outline(
         &self,
-        Parameters(ReadParams { path }): Parameters<ReadParams>,
+        Parameters(PathParams { path }): Parameters<PathParams>,
     ) -> Result<Json<DocumentOutlineResponse>, String> {
         self.service
             .document_outline(&path)
@@ -179,23 +135,10 @@ impl WikiMcpServer {
             .map_err(|err| err.to_string())
     }
 
-    #[tool(
-        description = "Compatibility fallback: read one indexed section from a Markdown document"
-    )]
-    fn read_section(
-        &self,
-        Parameters(ReadSectionParams { path, heading_path }): Parameters<ReadSectionParams>,
-    ) -> Result<Json<SectionResponse>, String> {
-        self.service
-            .read_section(&path, heading_path.as_deref())
-            .map(Json)
-            .map_err(|err| err.to_string())
-    }
-
     #[tool(description = "Infer a metadata frontmatter template for one Markdown document")]
     fn get_metadata_template(
         &self,
-        Parameters(MetadataPathParams { path }): Parameters<MetadataPathParams>,
+        Parameters(PathParams { path }): Parameters<PathParams>,
     ) -> Result<Json<MetadataTemplateResponse>, String> {
         self.service
             .metadata_template(&path)
@@ -208,7 +151,7 @@ impl WikiMcpServer {
     )]
     fn check_metadata(
         &self,
-        Parameters(MetadataPathParams { path }): Parameters<MetadataPathParams>,
+        Parameters(PathParams { path }): Parameters<PathParams>,
     ) -> Result<Json<MetadataCheckResponse>, String> {
         self.service
             .check_metadata(&path)
@@ -216,33 +159,7 @@ impl WikiMcpServer {
             .map_err(|err| err.to_string())
     }
 
-    #[tool(
-        description = "Insert inferred metadata templates into one document or the whole knowledge tree"
-    )]
-    fn apply_metadata_template(
-        &self,
-        Parameters(ApplyMetadataTemplateParams { path, overwrite }): Parameters<
-            ApplyMetadataTemplateParams,
-        >,
-    ) -> Result<Json<MetadataBatchWriteResponse>, String> {
-        self.service
-            .apply_metadata_template(path.as_deref(), overwrite.unwrap_or(false))
-            .map(Json)
-            .map_err(|err| err.to_string())
-    }
-
-    #[tool(description = "Write or update one Markdown document's metadata via a field patch")]
-    fn write_metadata(
-        &self,
-        Parameters(WriteMetadataParams { path, patch }): Parameters<WriteMetadataParams>,
-    ) -> Result<Json<MetadataWriteResponse>, String> {
-        self.service
-            .write_metadata(&path, &patch)
-            .map(Json)
-            .map_err(|err| err.to_string())
-    }
-
-    #[tool(description = "Fallback admin tool: reindex the full Markdown tree incrementally")]
+    #[tool(description = "Admin tool: reindex the full Markdown tree incrementally")]
     fn reindex_all(&self) -> Result<Json<IndexStats>, String> {
         self.service
             .reindex_all()

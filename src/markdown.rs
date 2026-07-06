@@ -4,15 +4,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use walkdir::{DirEntry, WalkDir};
 
 use crate::{
     config::AppConfig,
     model::{
-        ChunkDraft, DocumentMetadata, LineSpan, MarkdownDocument, MetadataBatchItem,
-        MetadataBatchWriteResponse, MetadataCheckResponse, MetadataLintDocument, MetadataLintIssue,
-        MetadataLintReport, MetadataPatch, MetadataTemplateResponse, MetadataWriteResponse,
+        ChunkDraft, DocumentMetadata, LineSpan, MarkdownDocument, MetadataCheckResponse,
+        MetadataLintDocument, MetadataLintIssue, MetadataLintReport, MetadataTemplateResponse,
         SectionDraft,
     },
 };
@@ -131,86 +130,6 @@ pub fn check_metadata_document(root: &Path, path: &Path) -> Result<MetadataCheck
         error_count,
         warning_count,
     })
-}
-
-/// 写入或更新单个文档的 frontmatter；未提供字段沿用现值或推断模板值。
-pub fn write_metadata_document(
-    root: &Path,
-    path: &Path,
-    patch: &MetadataPatch,
-) -> Result<MetadataWriteResponse> {
-    let doc = load_document(root, path, true)?;
-    let mut metadata = doc
-        .metadata
-        .clone()
-        .unwrap_or_else(|| infer_metadata_template(&doc));
-    apply_metadata_patch(&mut metadata, patch);
-    normalize_metadata(&mut metadata);
-    let action = if doc.has_frontmatter {
-        "updated_frontmatter"
-    } else {
-        "inserted_frontmatter"
-    };
-    rewrite_frontmatter(path, &doc.raw_content, &metadata)?;
-    let check = check_metadata_document(root, path)?;
-    let metadata = check.metadata.clone().unwrap_or_else(|| metadata.clone());
-    Ok(MetadataWriteResponse {
-        path: check.path,
-        action: action.to_string(),
-        metadata_valid: check.metadata_valid,
-        frontmatter: render_frontmatter(&metadata)?,
-        metadata,
-        issues: check.issues,
-        frontmatter_span: check.frontmatter_span,
-        insert_before_line: check.insert_before_line,
-        error_count: check.error_count,
-        warning_count: check.warning_count,
-    })
-}
-
-/// 给单文档或整个知识库补写 frontmatter 模板。
-pub fn apply_metadata_template(
-    config: &AppConfig,
-    relative_path: Option<&str>,
-    overwrite: bool,
-) -> Result<MetadataBatchWriteResponse> {
-    let files = if let Some(relative_path) = relative_path {
-        vec![config.knowledge_root.join(relative_path)]
-    } else {
-        discover_markdown_files(config)?
-    };
-
-    let mut response = MetadataBatchWriteResponse {
-        scanned_docs: files.len(),
-        updated_docs: 0,
-        skipped_docs: 0,
-        failed_docs: 0,
-        documents: Vec::with_capacity(files.len()),
-    };
-
-    for path in files {
-        let relative = relative_path_from_root(&config.knowledge_root, &path);
-        match apply_template_to_document(&config.knowledge_root, &path, overwrite) {
-            Ok(item) => {
-                match item.action.as_str() {
-                    "inserted_frontmatter" | "replaced_frontmatter" => response.updated_docs += 1,
-                    "skipped" => response.skipped_docs += 1,
-                    _ => {}
-                }
-                response.documents.push(item);
-            }
-            Err(err) => {
-                response.failed_docs += 1;
-                response.documents.push(MetadataBatchItem {
-                    path: relative,
-                    action: "failed".to_string(),
-                    message: err.to_string(),
-                });
-            }
-        }
-    }
-
-    Ok(response)
 }
 
 /// 读取单个 Markdown 文档，并可选解析 frontmatter。
@@ -384,33 +303,6 @@ fn parse_document_content(
     }
 }
 
-fn apply_template_to_document(
-    root: &Path,
-    path: &Path,
-    overwrite: bool,
-) -> Result<MetadataBatchItem> {
-    let doc = load_document(root, path, true)?;
-    if doc.has_frontmatter && !overwrite {
-        return Ok(MetadataBatchItem {
-            path: doc.relative_path,
-            action: "skipped".to_string(),
-            message: "frontmatter already exists; pass overwrite=true to replace it".to_string(),
-        });
-    }
-
-    let metadata = infer_metadata_template(&doc);
-    rewrite_frontmatter(path, &doc.raw_content, &metadata)?;
-    Ok(MetadataBatchItem {
-        path: doc.relative_path,
-        action: if doc.has_frontmatter {
-            "replaced_frontmatter".to_string()
-        } else {
-            "inserted_frontmatter".to_string()
-        },
-        message: "wrote inferred frontmatter template".to_string(),
-    })
-}
-
 fn infer_metadata_template(doc: &MarkdownDocument) -> DocumentMetadata {
     let title = infer_document_title(doc);
     let file_stem = doc
@@ -495,45 +387,6 @@ fn slugify_tag_leaf(value: &str) -> Option<String> {
     (!slug.is_empty()).then_some(slug)
 }
 
-fn apply_metadata_patch(metadata: &mut DocumentMetadata, patch: &MetadataPatch) {
-    if let Some(value) = &patch.title {
-        metadata.title = value.clone();
-    }
-    if let Some(value) = &patch.tags {
-        metadata.tags = value.clone();
-    }
-    if let Some(value) = &patch.aliases {
-        metadata.aliases = value.clone();
-    }
-    if let Some(value) = &patch.related {
-        metadata.related = value.clone();
-    }
-    if let Some(value) = &patch.source_type {
-        metadata.source_type = value.clone();
-    }
-    if let Some(value) = &patch.source_ref {
-        metadata.source_ref = value.clone();
-    }
-    if let Some(value) = &patch.status {
-        metadata.status = value.clone();
-    }
-    if let Some(value) = &patch.domain {
-        metadata.domain = Some(value.clone());
-    }
-    if let Some(value) = &patch.keywords {
-        metadata.keywords = value.clone();
-    }
-    if let Some(value) = &patch.updated_by {
-        metadata.updated_by = Some(value.clone());
-    }
-    if let Some(value) = &patch.updated_at {
-        metadata.updated_at = Some(value.clone());
-    }
-    if let Some(value) = &patch.review_priority {
-        metadata.review_priority = Some(value.clone());
-    }
-}
-
 fn render_frontmatter(metadata: &DocumentMetadata) -> Result<String> {
     let yaml = serde_yaml::to_string(metadata)
         .context("failed to serialize metadata to YAML")?
@@ -543,40 +396,6 @@ fn render_frontmatter(metadata: &DocumentMetadata) -> Result<String> {
         .trim()
         .to_string();
     Ok(format!("---\n{yaml}\n---"))
-}
-
-fn rewrite_frontmatter(path: &Path, raw_content: &str, metadata: &DocumentMetadata) -> Result<()> {
-    let body = rewrite_body(raw_content)?;
-    let rewritten = if body.is_empty() {
-        format!("{}\n", render_frontmatter(metadata)?)
-    } else {
-        format!("{}\n{}", render_frontmatter(metadata)?, body)
-    };
-    fs::write(path, rewritten)
-        .with_context(|| format!("failed to write metadata frontmatter to {}", path.display()))
-}
-
-fn rewrite_body(raw_content: &str) -> Result<&str> {
-    if let Some(frontmatter) = extract_frontmatter_block(raw_content) {
-        return Ok(&raw_content[frontmatter.body_start..]);
-    }
-    if starts_with_frontmatter_delimiter(raw_content) {
-        bail!("frontmatter opening delimiter found but closing delimiter is missing")
-    }
-    Ok(raw_content)
-}
-
-fn relative_path_from_root(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .ok()
-        .map(|relative| {
-            relative
-                .components()
-                .map(|component| component.as_os_str().to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join("/")
-        })
-        .unwrap_or_else(|| path.display().to_string())
 }
 
 fn lint_metadata_document(root: &Path, doc: &MarkdownDocument) -> MetadataLintDocument {
@@ -1391,68 +1210,6 @@ mod tests {
         assert_eq!(response.metadata.domain.as_deref(), Some("system"));
         assert_eq!(response.metadata.tags, vec!["system/ros".to_string()]);
         assert!(response.frontmatter.starts_with("---\n"));
-    }
-
-    #[test]
-    fn write_metadata_document_inserts_frontmatter_and_preserves_body() {
-        let temp = TempDir::new().unwrap();
-        fs::create_dir_all(temp.path().join("System")).unwrap();
-        let path = temp.path().join("System/ROS.md");
-        fs::write(&path, "# ROS\nbody line").unwrap();
-
-        let response =
-            write_metadata_document(temp.path(), &path, &MetadataPatch::default()).unwrap();
-        let content = fs::read_to_string(&path).unwrap();
-        let check = check_metadata_document(temp.path(), &path).unwrap();
-
-        assert_eq!(response.action, "inserted_frontmatter");
-        assert!(content.starts_with("---\n"));
-        assert!(content.ends_with("# ROS\nbody line"));
-        assert!(check.metadata_valid);
-        assert_eq!(
-            check.metadata.as_ref().unwrap().tags,
-            vec!["system/ros".to_string()]
-        );
-    }
-
-    #[test]
-    fn apply_metadata_template_skips_existing_frontmatter_without_overwrite() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("note.md");
-        fs::write(
-            &path,
-            "---\ntitle: Demo\ntags:\n  - planning/demo\nsource_type: note\nsource_ref: local://note.md\nstatus: draft\n---\n# Demo\nbody",
-        )
-        .unwrap();
-
-        let report =
-            apply_metadata_template(&test_config(temp.path()), Some("note.md"), false).unwrap();
-        assert_eq!(report.updated_docs, 0);
-        assert_eq!(report.skipped_docs, 1);
-        assert_eq!(report.documents[0].action, "skipped");
-    }
-
-    #[test]
-    fn write_metadata_document_merges_patch_fields() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("note.md");
-        fs::write(&path, "# Demo\nbody").unwrap();
-
-        let patch = MetadataPatch {
-            title: Some("Demo Note".to_string()),
-            tags: Some(vec!["planning/demo-note".to_string()]),
-            keywords: Some(vec!["demo-note".to_string()]),
-            ..MetadataPatch::default()
-        };
-        let response = write_metadata_document(temp.path(), &path, &patch).unwrap();
-
-        assert_eq!(response.metadata.title, "Demo Note");
-        assert_eq!(
-            response.metadata.tags,
-            vec!["planning/demo-note".to_string()]
-        );
-        assert_eq!(response.metadata.keywords, vec!["demo-note".to_string()]);
-        assert!(response.metadata_valid);
     }
 
     #[test]

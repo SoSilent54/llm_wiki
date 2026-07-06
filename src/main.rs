@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
-use llm_wiki::{config::AppConfig, markdown, mcp, model::MetadataPatch, service::KnowledgeService};
+use llm_wiki::{config::AppConfig, markdown, mcp, service::KnowledgeService};
 
 #[derive(Debug, Parser)]
 #[command(name = "llm-wiki")]
@@ -54,22 +54,10 @@ enum Command {
         #[arg(long = "edge-type")]
         edge_types: Vec<String>,
     },
-    /// 读取知识库原始 Markdown
-    Read {
-        #[arg(long)]
-        path: String,
-    },
     /// 读取文档 section 大纲
     Outline {
         #[arg(long)]
         path: String,
-    },
-    /// 读取单个 section 正文
-    ReadSection {
-        #[arg(long)]
-        path: String,
-        #[arg(long)]
-        heading_path: Option<String>,
     },
     /// 检查 Wiki frontmatter 元数据是否符合规范；可选单文档模式
     LintMetadata {
@@ -82,20 +70,6 @@ enum Command {
     MetadataTemplate {
         #[arg(long)]
         path: Option<String>,
-    },
-    /// 为单文档或整个知识库补写 metadata 模板
-    ApplyMetadataTemplate {
-        #[arg(long)]
-        path: Option<String>,
-        #[arg(long, default_value_t = false)]
-        overwrite: bool,
-    },
-    /// 用 JSON patch 写入单文档 metadata
-    WriteMetadata {
-        #[arg(long)]
-        path: String,
-        #[arg(long)]
-        patch_json: String,
     },
     /// 通过 stdio 启动 MCP 服务
     ServeMcp,
@@ -132,19 +106,6 @@ async fn main() -> Result<()> {
                     bail!("metadata lint failed with {} errors", report.error_count);
                 }
             }
-        }
-        Command::ApplyMetadataTemplate { path, overwrite } => {
-            let config = AppConfig::load(&cli.config)?;
-            let service = KnowledgeService::new_without_embedder(config)?;
-            let result = service.apply_metadata_template(path.as_deref(), overwrite)?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
-        }
-        Command::WriteMetadata { path, patch_json } => {
-            let config = AppConfig::load(&cli.config)?;
-            let service = KnowledgeService::new_without_embedder(config)?;
-            let patch: MetadataPatch = serde_json::from_str(&patch_json)?;
-            let result = service.write_metadata(&path, &patch)?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Command::Index => {
             let config = AppConfig::load(&cli.config)?;
@@ -188,22 +149,10 @@ async fn main() -> Result<()> {
             let result = service.related(&path, heading_path.as_deref(), limit, edge_types)?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
-        Command::Read { path } => {
-            let config = AppConfig::load(&cli.config)?;
-            let service = KnowledgeService::new_without_embedder(config)?;
-            let result = service.read_document(&path)?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
-        }
         Command::Outline { path } => {
             let config = AppConfig::load(&cli.config)?;
             let service = KnowledgeService::new_without_embedder(config)?;
             let result = service.document_outline(&path)?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
-        }
-        Command::ReadSection { path, heading_path } => {
-            let config = AppConfig::load(&cli.config)?;
-            let service = KnowledgeService::new_without_embedder(config)?;
-            let result = service.read_section(&path, heading_path.as_deref())?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Command::ServeMcp => {
