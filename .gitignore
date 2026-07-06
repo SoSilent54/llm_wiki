@@ -1,4 +1,5 @@
 target/
+.ai_doc
 .llm_wiki_state/
 config/llm_wiki.toml
 model/fastembed/
