@@ -49,34 +49,131 @@ jobs:
       - name: Run tests
         run: cargo test --locked
 
-  build:
+  verify_ubuntu20:
+    strategy:
+      fail-fast: false
+      matrix:
+        runs_on:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs_on }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify inside Ubuntu 20.04 container
+        run: |
+          docker run --rm \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            ubuntu:20.04 \
+            bash -lc '
+              set -euxo pipefail
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                build-essential \
+                ca-certificates \
+                curl \
+                libssl-dev \
+                pkg-config
+              curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+              . "$HOME/.cargo/env"
+              rustup component add rustfmt
+              cargo fmt --check
+              cargo test --locked
+              if [ -d /work/target ]; then
+                chown -R "$HOST_UID:$HOST_GID" /work/target
+              fi
+            '
+
+  build_linux_ubuntu20:
+    needs:
+      - verify
+      - verify_ubuntu20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs_on: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            package_id: ubuntu20.04-x86_64-unknown-linux-gnu
+            archive_format: tar.gz
+            binary_name: llm-wiki
+          - runs_on: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            package_id: ubuntu20.04-aarch64-unknown-linux-gnu
+            archive_format: tar.gz
+            binary_name: llm-wiki
+
+    runs-on: ${{ matrix.runs_on }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Linux release inside Ubuntu 20.04 container
+        run: |
+          docker run --rm \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -e CARGO_BUILD_TARGET="${{ matrix.target }}" \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            ubuntu:20.04 \
+            bash -lc '
+              set -euxo pipefail
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                build-essential \
+                ca-certificates \
+                curl \
+                libssl-dev \
+                pkg-config
+              curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+              . "$HOME/.cargo/env"
+              cargo build --locked --release --target "$CARGO_BUILD_TARGET"
+              chown -R "$HOST_UID:$HOST_GID" /work/target
+            '
+
+      - name: Package release archive
+        run: >-
+          python scripts/package_release.py
+          --repo-root .
+          --binary target/${{ matrix.target }}/release/${{ matrix.binary_name }}
+          --target ${{ matrix.target }}
+          --package-id ${{ matrix.package_id }}
+          --tag ${{ env.RELEASE_TAG }}
+          --archive-format ${{ matrix.archive_format }}
+          --output-dir dist
+
+      - name: Upload packaged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.package_id }}
+          path: dist/*.${{ matrix.archive_format }}
+          if-no-files-found: error
+
+  build_other_platforms:
     needs: verify
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            archive_format: tar.gz
-            binary_name: llm-wiki
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            archive_format: tar.gz
-            binary_name: llm-wiki
           - os: windows-2022
             target: x86_64-pc-windows-msvc
+            package_id: x86_64-pc-windows-msvc
             archive_format: zip
             binary_name: llm-wiki.exe
           - os: windows-11-arm
             target: aarch64-pc-windows-msvc
+            package_id: aarch64-pc-windows-msvc
             archive_format: zip
             binary_name: llm-wiki.exe
-          - os: macos-13
-            target: x86_64-apple-darwin
-            archive_format: tar.gz
-            binary_name: llm-wiki
           - os: macos-14
             target: aarch64-apple-darwin
+            package_id: aarch64-apple-darwin
             archive_format: tar.gz
             binary_name: llm-wiki
 
@@ -103,6 +200,7 @@ jobs:
           --repo-root .
           --binary target/${{ matrix.target }}/release/${{ matrix.binary_name }}
           --target ${{ matrix.target }}
+          --package-id ${{ matrix.package_id }}
           --tag ${{ env.RELEASE_TAG }}
           --archive-format ${{ matrix.archive_format }}
           --output-dir dist
@@ -110,12 +208,14 @@ jobs:
       - name: Upload packaged artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.target }}
+          name: release-${{ matrix.package_id }}
           path: dist/*.${{ matrix.archive_format }}
           if-no-files-found: error
 
   publish:
-    needs: build
+    needs:
+      - build_linux_ubuntu20
+      - build_other_platforms
     runs-on: ubuntu-24.04
     steps:
       - name: Download build artifacts

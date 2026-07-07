@@ -15,6 +15,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo-root", required=True)
     parser.add_argument("--binary", required=True)
     parser.add_argument("--target", required=True)
+    parser.add_argument("--package-id")
     parser.add_argument("--tag", required=True)
     parser.add_argument("--archive-format", choices=("tar.gz", "zip"), required=True)
     parser.add_argument("--output-dir", required=True)
@@ -32,12 +33,12 @@ def copy_tree_file(repo_root: Path, relative_path: str, package_root: Path) -> N
 def build_package_root(
     repo_root: Path,
     binary_path: Path,
-    target: str,
+    package_id: str,
     tag: str,
     output_dir: Path,
     package_name: str,
 ) -> Path:
-    package_root = output_dir / f"{package_name}-{tag}-{target}"
+    package_root = output_dir / f"{package_name}-{tag}-{package_id}"
     if package_root.exists():
         shutil.rmtree(package_root)
     package_root.mkdir(parents=True)
@@ -82,10 +83,11 @@ def main() -> int:
         raise FileNotFoundError(f"binary not found: {binary_path}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    package_id = args.package_id or args.target
     package_root = build_package_root(
         repo_root=repo_root,
         binary_path=binary_path,
-        target=args.target,
+        package_id=package_id,
         tag=args.tag,
         output_dir=output_dir,
         package_name=args.package_name,

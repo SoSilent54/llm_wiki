@@ -194,24 +194,24 @@ export LD_LIBRARY_PATH=/path/to/onnxruntime/capi
 
 当前 release workflow 会构建这些平台：
 
-- `x86_64-unknown-linux-gnu`
-- `aarch64-unknown-linux-gnu`
+- `ubuntu20.04-x86_64-unknown-linux-gnu`
+- `ubuntu20.04-aarch64-unknown-linux-gnu`
 - `x86_64-pc-windows-msvc`
 - `aarch64-pc-windows-msvc`
-- `x86_64-apple-darwin`
 - `aarch64-apple-darwin`
 
 资产命名格式：
 
 ```text
-llm-wiki-<tag>-<target>.tar.gz
-llm-wiki-<tag>-<target>.zip
+llm-wiki-<tag>-<package-id>.tar.gz
+llm-wiki-<tag>-<package-id>.zip
 ```
 
 其中：
 
 - Linux / macOS：`tar.gz`
 - Windows：`zip`
+- Linux 资产会显式带 `ubuntu20.04-` 前缀，用来区分 Ubuntu 20 基线包；这里不再把它表述成 anylinux 通用包
 
 ### 5.2 Release 资产内容
 
@@ -379,8 +379,10 @@ llm-wiki --config /absolute/path/to/config/llm_wiki.toml serve-mcp
   - 也支持 `workflow_dispatch` 手动触发
 - `.github/workflows/release.yml`
   - 在 tag `v*.*.*` 上触发
-  - release 前同样先在 `ubuntu-22.04`、`ubuntu-24.04`、`ubuntu-24.04-arm` 上跑 verify
-  - release 构建矩阵覆盖 Linux / Windows / macOS 的 `x86_64 + arm`
+  - release 前会先做 hosted verify（`ubuntu-22.04`、`ubuntu-24.04`、`ubuntu-24.04-arm`）
+  - 同时再做 Ubuntu 20 容器 verify（Linux `x86_64 + arm64`）
+  - release 构建矩阵产出 Ubuntu20 Linux `x86_64 + arm64`、Windows `x86_64 + arm64`、macOS arm64
+  - Linux 资产显式按 `ubuntu20.04-*` 命名，不再用裸 `*-unknown-linux-gnu` 暗示 anylinux
   - 也支持 `workflow_dispatch`，手动输入 tag 发布
   - 先验证，再构建多平台 release 资产
   - 自动创建 GitHub Release 并上传压缩包
@@ -410,14 +412,19 @@ push main/master or pull_request
 
 tag vX.Y.Z or workflow_dispatch(tag)
   └── Release
-      └── verify
-          ├── cargo fmt --check
-          └── cargo test --locked
-      └── build matrix
-          ├── Linux x86_64
-          ├── Windows x86_64
-          ├── macOS x86_64
-          └── macOS arm64
+      ├── hosted verify
+      │   ├── ubuntu-22.04
+      │   ├── ubuntu-24.04
+      │   └── ubuntu-24.04-arm
+      ├── ubuntu20 container verify
+      │   ├── Linux x86_64
+      │   └── Linux arm64
+      ├── build matrix
+      │   ├── Ubuntu20 Linux x86_64
+      │   ├── Ubuntu20 Linux arm64
+      │   ├── Windows x86_64
+      │   ├── Windows arm64
+      │   └── macOS arm64
       └── create GitHub Release
           └── upload packaged archives
 ```
@@ -435,10 +442,10 @@ tag vX.Y.Z or workflow_dispatch(tag)
 ### 10.1.1 GitHub Actions 里的 Ubuntu 20.04 怎么办
 
 - 当前 GitHub-hosted runner 官方可用表里有 `ubuntu-22.04`、`ubuntu-24.04`、`ubuntu-26.04`，**没有 `ubuntu-20.04`**。
-- 所以仓库现在把 hosted verify 覆盖到 `22.04 + 24.04`。
-- 如果你确实还要验证 Ubuntu 20.04，有两条路：
-  - 用 self-hosted 20.04 runner
-  - 或在 `ubuntu-24.04` runner 上额外跑一个 `ubuntu:20.04` container compatibility job
+- 所以仓库没有直接使用 `runs-on: ubuntu-20.04`。
+- 当前 release workflow 的做法是：
+  - hosted verify 继续跑 `ubuntu-22.04` / `ubuntu-24.04` / `ubuntu-24.04-arm`
+  - Ubuntu 20 的 Linux `x86_64` / `arm64` release 改为在 `ubuntu-24.04` / `ubuntu-24.04-arm` runner 上通过 `ubuntu:20.04` container 构建与验证
 
 ### 10.1.2 onnxruntime 动态库当前怎么处理
 
