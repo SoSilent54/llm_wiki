@@ -40,7 +40,7 @@
 
 ## 3. 运行前提
 
-### 3.1 Rust / Cargo
+### 3.1 Rust / Cargo（仅源码构建）
 
 源码构建需要：
 
@@ -48,6 +48,8 @@
 - `cargo`
 
 本项目当前用 `cargo build --locked` / `cargo test --locked` 验证。
+
+如果你是**直接下载 GitHub Release 里的预编译包**，运行时**不需要** Rust / Cargo。
 
 ### 3.2 fastembed 默认运行时依赖
 
@@ -60,6 +62,10 @@
 
 1. **模型缓存**
 2. **ONNX Runtime 动态库**
+
+当前开发环境（Ubuntu 20.04）实际使用并验证的是 **ONNX Runtime 1.19.2**。
+
+结合当前依赖组合 `fastembed = 4.0.0` / `ort = 2.0.0-rc.5`，可以先把**理论适配范围**理解为 **ONNX Runtime 1.18.x ~ 1.19.x**；更新版本暂时**没有做新版适配和回归验证**。
 
 `llm-wiki` 当前不会把 ORT 动态库打进仓库，也不会把模型本体提交进 git。
 
@@ -153,6 +159,12 @@ Windows PowerShell：
 | macOS | `/path/to/libonnxruntime.dylib` | `DYLD_LIBRARY_PATH=/path/to/onnxruntime/dir` |
 | Windows | `C:\path\to\onnxruntime.dll` | 把 dll 所在目录加入 `PATH` |
 
+版本说明：
+
+- 当前开发环境（Ubuntu 20.04）已验证：**ONNX Runtime 1.19.2**
+- 当前代码分支可先按**理论适配范围 `1.18.x ~ 1.19.x`** 理解
+- `1.20+` 暂时**没有做新版适配和完整回归验证**
+
 Linux 示例：
 
 ```bash
@@ -215,6 +227,18 @@ llm-wiki-<tag>-<target>/
 ```
 
 ### 5.3 下载后的配置流程
+
+直接下载 release 包运行时，**不需要安装 Rust / Cargo**。你只需要：
+
+- 对应平台的预编译二进制
+- 本地 `config/llm_wiki.toml`
+- 你的 Markdown 知识库目录
+- 如果使用 `fastembed`，再额外准备模型缓存和 ORT 动态库
+
+也就是说：
+
+- **Rust 只属于源码构建依赖**
+- **ORT 才是当前 `fastembed` 路线的运行时依赖**
 
 1. 解压 release 资产
 2. 复制 `config/llm_wiki.template.toml` 为本地 `config/llm_wiki.toml`
@@ -421,6 +445,9 @@ tag vX.Y.Z or workflow_dispatch(tag)
   - macOS 是 `libonnxruntime.dylib`
   - Windows 是 `onnxruntime.dll`
 - 当前代码走的是 `fastembed` 的 **dynamic loading** 路线；编译期不需要链接你本机的 ORT，真正需要 ORT 的是运行 `index` / `search` / `search-sections` / `serve-mcp` 时。
+- 当前开发环境（Ubuntu 20.04）实际使用并验证的是 **ONNX Runtime 1.19.2**。
+- 结合当前依赖组合 `fastembed = 4.0.0` / `ort = 2.0.0-rc.5`，可先把**理论适配范围**理解为 **ONNX Runtime 1.18.x ~ 1.19.x**。
+- 对 `1.20+` 以及更高版本，仓库目前**暂时没有做新版适配和回归验证**。
 - 所以当前推荐策略是：
   - CI / Release 只负责构建 `llm-wiki` 二进制
   - 用户本地通过 `ORT_DYLIB_PATH` + `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` / `PATH` 提供匹配平台的 ORT
