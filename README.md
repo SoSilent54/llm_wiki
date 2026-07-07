@@ -196,6 +196,8 @@ export LD_LIBRARY_PATH=/path/to/onnxruntime/capi
 
 - `ubuntu20.04-x86_64-unknown-linux-gnu`
 - `ubuntu20.04-aarch64-unknown-linux-gnu`
+- `x86_64-unknown-linux-musl`
+- `aarch64-unknown-linux-musl`
 - `x86_64-pc-windows-msvc`
 - `aarch64-pc-windows-msvc`
 - `aarch64-apple-darwin`
@@ -211,14 +213,15 @@ llm-wiki-<tag>-<package-id>.zip
 
 - Linux / macOS：`tar.gz`
 - Windows：`zip`
-- Linux 资产会显式带 `ubuntu20.04-` 前缀，用来区分 Ubuntu 20 基线包；这里不再把它表述成 anylinux 通用包
+- `ubuntu20.04-*` 是 glibc 基线包，优先面向 Ubuntu 20 / glibc 2.31 一侧
+- `*-unknown-linux-musl` 是更通用的 Linux musl 包，用来避开 glibc 版本差异；它和 Ubuntu20 glibc 包是两条不同发行线
 
 ### 5.2 Release 资产内容
 
 每个压缩包会包含：
 
 ```text
-llm-wiki-<tag>-<target>/
+llm-wiki-<tag>-<package-id>/
 ├── llm-wiki[.exe]
 ├── README.md
 ├── config/llm_wiki.template.toml
@@ -241,6 +244,7 @@ llm-wiki-<tag>-<target>/
 
 - **Rust 只属于源码构建依赖**
 - **ORT 才是当前 `fastembed` 路线的运行时依赖**
+- `*-unknown-linux-musl` 资产如果仍要使用 `fastembed`，不要默认复用 Ubuntu/glibc 版 ORT；更稳妥的是准备 musl 兼容的 ORT，或者直接切到 `hashing`
 
 1. 解压 release 资产
 2. 复制 `config/llm_wiki.template.toml` 为本地 `config/llm_wiki.toml`
@@ -381,8 +385,8 @@ llm-wiki --config /absolute/path/to/config/llm_wiki.toml serve-mcp
   - 在 tag `v*.*.*` 上触发
   - release 前会先做 hosted verify（`ubuntu-22.04`、`ubuntu-24.04`、`ubuntu-24.04-arm`）
   - 同时再做 Ubuntu 20 容器 verify（Linux `x86_64 + arm64`）
-  - release 构建矩阵产出 Ubuntu20 Linux `x86_64 + arm64`、Windows `x86_64 + arm64`、macOS arm64
-  - Linux 资产显式按 `ubuntu20.04-*` 命名，不再用裸 `*-unknown-linux-gnu` 暗示 anylinux
+  - release 构建矩阵产出 Ubuntu20 Linux `x86_64 + arm64`、Linux musl `x86_64 + arm64`、Windows `x86_64 + arm64`、macOS arm64
+  - Linux 资产现在分成两类：`ubuntu20.04-*` glibc 基线包，以及 `*-unknown-linux-musl` 通用 musl 包
   - 也支持 `workflow_dispatch`，手动输入 tag 发布
   - 先验证，再构建多平台 release 资产
   - 自动创建 GitHub Release 并上传压缩包
@@ -422,6 +426,8 @@ tag vX.Y.Z or workflow_dispatch(tag)
       ├── build matrix
       │   ├── Ubuntu20 Linux x86_64
       │   ├── Ubuntu20 Linux arm64
+      │   ├── musl Linux x86_64
+      │   ├── musl Linux arm64
       │   ├── Windows x86_64
       │   ├── Windows arm64
       │   └── macOS arm64
@@ -445,13 +451,15 @@ tag vX.Y.Z or workflow_dispatch(tag)
 - 所以仓库没有直接使用 `runs-on: ubuntu-20.04`。
 - 当前 release workflow 的做法是：
   - hosted verify 继续跑 `ubuntu-22.04` / `ubuntu-24.04` / `ubuntu-24.04-arm`
-  - Ubuntu 20 的 Linux `x86_64` / `arm64` release 改为在 `ubuntu-24.04` / `ubuntu-24.04-arm` runner 上通过 `ubuntu:20.04` container 构建与验证
+  - Ubuntu 20 的 Linux `x86_64` / `arm64` glibc 包继续在 `ubuntu-24.04` / `ubuntu-24.04-arm` runner 上通过 `ubuntu:20.04` container 构建与验证
+  - 更通用的 Linux 发行线额外提供 `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl`
 
 ### 10.1.2 onnxruntime 动态库当前怎么处理
 
 - 当前 release **不打包** `onnxruntime` 动态库。
 - 原因不是编译做不到，而是它属于**平台/架构/安装方式强相关的运行时依赖**：
-  - Linux 是 `libonnxruntime.so`
+  - Linux glibc 包通常配 `libonnxruntime.so`
+  - Linux musl 包更适合配 musl 兼容的 `libonnxruntime.so`
   - macOS 是 `libonnxruntime.dylib`
   - Windows 是 `onnxruntime.dll`
 - 当前代码走的是 `fastembed` 的 **dynamic loading** 路线；编译期不需要链接你本机的 ORT，真正需要 ORT 的是运行 `index` / `search` / `search-sections` / `serve-mcp` 时。
@@ -460,11 +468,8 @@ tag vX.Y.Z or workflow_dispatch(tag)
 - 对 `1.20+` 以及更高版本，仓库目前**暂时没有做新版适配和回归验证**。
 - 所以当前推荐策略是：
   - CI / Release 只负责构建 `llm-wiki` 二进制
-  - 用户本地通过 `ORT_DYLIB_PATH` + `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` / `PATH` 提供匹配平台的 ORT
-  - 如果不想处理 ORT，就把 `embedding_backend` 改成 `hashing`
-- 如果后面你要把安装体验继续做厚，有两个可选方向：
-  - 为每个平台额外提供 ORT 下载脚本
-  - 或在 release workflow 里按平台附带官方 ORT runtime 资产
+  - glibc Linux / macOS / Windows 资产，用户本地通过 `ORT_DYLIB_PATH` + `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` / `PATH` 提供匹配平台的 ORT
+  - musl Linux 资产，如果继续使用 `fastembed`，优先准备 musl 兼容的 ORT；如果只是想先要更通用的 Linux 包，直接把 `embedding_backend` 改成 `hashing`
 
 ### 10.2 只想先验证索引和 MCP，不想处理模型
 
