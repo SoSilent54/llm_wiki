@@ -56,7 +56,7 @@
 | `search_sections` | Locate | `query`, `limit?` | `query`, `total_sections`, `hits[{ doc_path, heading_path, score, first_paragraph, anchor }]` | section 摘要层召回；推荐先于整文阅读 |
 | `library_overview` | Discovery | 无 | `doc_count`, `section_count`, `chunk_count`, `top_dirs[]`, `top_tags[]` | 返回知识库总览 |
 | `list_documents` | Discovery | `prefix?`, `depth?` | `prefix`, `depth`, `nodes[{ path, node_type, title, child_count, tag_sample }]` | 按目录层次浏览文档树 |
-| `related` | Locate | `path`, `heading_path?`, `limit?`, `edge_types?` | `source_path`, `source_heading_path`, `hits[{ target_type, target_path, target_heading, edge_type, weight, why, anchor? }]` | 从 graph 边扩展相近文档/章节 |
+| `related` | Locate | `path`, `heading_path?`, `limit?`, `edge_types?` | `source_path`, `source_heading_path`, `hits[{ target_type, target_path, target_heading, edge_type, weight, why, anchor? }]` | 从 graph 边扩展相近文档/章节；当前可返回显式关联、正文 Markdown 链接与语义近邻 |
 | `get_document_outline` | Discovery | `path` | `path`, `title`, `sections[{ ordinal, heading_path, heading_level, parent_heading_path, first_paragraph, anchor }]` | section 大纲入口；带行号 locator |
 | `get_metadata_template` | Metadata Assist | `path` | `path`, `has_frontmatter`, `metadata`, `frontmatter`, `frontmatter_span`, `insert_before_line` | 为单文档推断 frontmatter 模板，但不写回 |
 | `check_metadata` | Metadata Validate | `path` | `path`, `has_frontmatter`, `metadata_valid`, `parse_error`, `metadata?`, `issues[]`, `frontmatter_span`, `insert_before_line`, `error_count`, `warning_count` | 校验 frontmatter 语法与规范，并给出定位信息 |

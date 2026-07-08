@@ -18,7 +18,7 @@
 - section / chunk 行号落库，返回 `path + line span` 风格 locator
 - chunk 级召回：`search`
 - section 摘要级召回：`search-sections`
-- 图谱浏览：`library-overview` / `list-documents` / `related`
+- 图谱浏览：`library-overview` / `list-documents` / `related`（含显式正文 Markdown 链接边）
 - metadata 辅助：`metadata-template` / `lint-metadata`
 - stdio MCP server：供 OMP 或其他 MCP client 直接接入
 

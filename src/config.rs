@@ -100,7 +100,7 @@ impl AppConfig {
     /// 生成图谱层版本指纹；结构边或规则变化时触发整图重建。
     pub fn graph_fingerprint(&self) -> String {
         format!(
-            "graph-v2|enabled={}|neighbors={}|min_score={:.3}|edges=contains,tagged_with,related_to,semantic_similar_*",
+            "graph-v3|enabled={}|neighbors={}|min_score={:.3}|edges=contains,tagged_with,related_to,links_to,semantic_similar_*",
             self.graph_enabled,
             self.graph_semantic_neighbors_per_node,
             self.graph_semantic_min_score

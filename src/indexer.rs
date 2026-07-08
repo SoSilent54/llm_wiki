@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    path::Path,
+    path::{Component, Path},
 };
 
 use anyhow::Result;
@@ -30,7 +30,23 @@ struct GraphDocumentInput {
     title: String,
     tags: Vec<String>,
     related: Vec<String>,
+    links: Vec<GraphLinkInput>,
     sections: Vec<SectionRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GraphLinkInput {
+    source_node_id: String,
+    target_doc_path: String,
+    href: String,
+    text: String,
+    line: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InlineMarkdownLink {
+    href: String,
+    text: String,
 }
 
 impl<'a> Indexer<'a> {
@@ -318,12 +334,14 @@ fn build_graph_input(
         .as_ref()
         .map(|metadata| metadata.related.clone())
         .unwrap_or_default();
+    let links = extract_graph_links(doc, sections);
 
     GraphDocumentInput {
         doc_path: doc.relative_path.clone(),
         title,
         tags,
         related,
+        links,
         sections: sections.to_vec(),
     }
 }
@@ -504,6 +522,57 @@ fn build_graph_records(
                     "related_to",
                     0.95,
                     json!({"source": "frontmatter.related"}),
+                    graph_fingerprint,
+                )?,
+            );
+        }
+
+        let mut aggregated_links = HashMap::<String, (usize, &GraphLinkInput)>::new();
+        for link in &doc.links {
+            if link.target_doc_path == doc.doc_path
+                || !all_doc_paths.contains(&link.target_doc_path)
+            {
+                continue;
+            }
+            push_edge(
+                &mut edges,
+                &mut edge_ids,
+                graph_edge_record(
+                    link.source_node_id.clone(),
+                    doc_node_id(&link.target_doc_path),
+                    "links_to",
+                    0.94,
+                    json!({
+                        "href": link.href,
+                        "text": link.text,
+                        "line": link.line,
+                        "mention_count": 1,
+                        "target_path": link.target_doc_path,
+                    }),
+                    graph_fingerprint,
+                )?,
+            );
+            aggregated_links
+                .entry(link.target_doc_path.clone())
+                .and_modify(|(count, _)| *count += 1)
+                .or_insert((1, link));
+        }
+        for (target_doc_path, (mention_count, first_link)) in aggregated_links {
+            push_edge(
+                &mut edges,
+                &mut edge_ids,
+                graph_edge_record(
+                    doc_node.clone(),
+                    doc_node_id(&target_doc_path),
+                    "links_to",
+                    0.94,
+                    json!({
+                        "href": first_link.href,
+                        "text": first_link.text,
+                        "line": first_link.line,
+                        "mention_count": mention_count,
+                        "target_path": target_doc_path,
+                    }),
                     graph_fingerprint,
                 )?,
             );
@@ -716,6 +785,140 @@ fn push_edge(edges: &mut Vec<GraphEdgeRecord>, seen: &mut HashSet<String>, edge:
     }
 }
 
+fn extract_graph_links(
+    doc: &crate::model::MarkdownDocument,
+    sections: &[SectionRecord],
+) -> Vec<GraphLinkInput> {
+    let mut links = Vec::new();
+    for section in sections {
+        for (line_offset, line) in section.body_text.lines().enumerate() {
+            let line_number = section.body_start_line + line_offset;
+            for inline_link in extract_inline_links_from_line(line) {
+                let Some(target_doc_path) =
+                    normalize_markdown_doc_link_target(&doc.relative_path, &inline_link.href)
+                else {
+                    continue;
+                };
+                links.push(GraphLinkInput {
+                    source_node_id: section_node_id(section),
+                    target_doc_path,
+                    href: inline_link.href,
+                    text: inline_link.text,
+                    line: line_number,
+                });
+            }
+        }
+    }
+    links
+}
+
+fn extract_inline_links_from_line(line: &str) -> Vec<InlineMarkdownLink> {
+    let bytes = line.as_bytes();
+    let mut cursor = 0usize;
+    let mut links = Vec::new();
+
+    while cursor < bytes.len() {
+        if bytes[cursor] != b'[' || (cursor > 0 && bytes[cursor - 1] == b'!') {
+            cursor += 1;
+            continue;
+        }
+
+        let Some(text_end_rel) = line[cursor + 1..].find(']') else {
+            break;
+        };
+        let text_end = cursor + 1 + text_end_rel;
+        let mut target_start = text_end + 1;
+        while target_start < bytes.len() && bytes[target_start].is_ascii_whitespace() {
+            target_start += 1;
+        }
+        if target_start >= bytes.len() || bytes[target_start] != b'(' {
+            cursor += 1;
+            continue;
+        }
+
+        let Some(target_end_rel) = line[target_start + 1..].find(')') else {
+            break;
+        };
+        let target_end = target_start + 1 + target_end_rel;
+        let Some(href) = extract_inline_link_href(&line[target_start + 1..target_end]) else {
+            cursor = target_end + 1;
+            continue;
+        };
+
+        links.push(InlineMarkdownLink {
+            href,
+            text: line[cursor + 1..text_end].trim().to_string(),
+        });
+        cursor = target_end + 1;
+    }
+
+    links
+}
+
+fn extract_inline_link_href(raw_target: &str) -> Option<String> {
+    let trimmed = raw_target.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(rest) = trimmed.strip_prefix('<') {
+        let end = rest.find('>')?;
+        let href = rest[..end].trim();
+        return (!href.is_empty()).then(|| href.to_string());
+    }
+
+    trimmed
+        .split_whitespace()
+        .next()
+        .filter(|href| !href.is_empty())
+        .map(str::to_string)
+}
+
+fn normalize_markdown_doc_link_target(source_doc_path: &str, href: &str) -> Option<String> {
+    let href = href.trim();
+    if href.is_empty()
+        || href.starts_with('#')
+        || href.contains('#')
+        || href.contains('?')
+        || href.starts_with('/')
+        || href
+            .split('/')
+            .next()
+            .is_some_and(|segment| segment.contains(':'))
+    {
+        return None;
+    }
+
+    if !href.to_ascii_lowercase().ends_with(".md") {
+        return None;
+    }
+
+    let mut normalized = Vec::<String>::new();
+    if let Some(parent) = Path::new(source_doc_path).parent() {
+        for component in parent.components() {
+            match component {
+                Component::CurDir => {}
+                Component::Normal(value) => normalized.push(value.to_string_lossy().into_owned()),
+                _ => return None,
+            }
+        }
+    }
+
+    for component in Path::new(href).components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(value) => normalized.push(value.to_string_lossy().into_owned()),
+            Component::ParentDir => {
+                normalized.pop()?;
+            }
+            _ => return None,
+        }
+    }
+
+    let path = normalized.join("/");
+    (!path.is_empty()).then_some(path)
+}
+
 fn fallback_doc_label(doc_path: &str) -> String {
     Path::new(doc_path)
         .file_stem()
@@ -793,5 +996,139 @@ fn section_label(section: &SectionRecord, doc_title: &str) -> String {
             .next()
             .unwrap_or(&section.heading_path)
             .to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_graph_input, build_graph_records, doc_node_id, section_node_id};
+    use crate::{
+        hash::sha256_hex,
+        markdown,
+        model::{MarkdownDocument, SectionRecord},
+    };
+    use serde_json::Value;
+    use std::path::PathBuf;
+
+    fn test_doc(relative_path: &str, content: &str) -> MarkdownDocument {
+        MarkdownDocument {
+            relative_path: relative_path.to_string(),
+            absolute_path: PathBuf::from(relative_path),
+            raw_content: content.to_string(),
+            content: content.to_string(),
+            metadata: None,
+            has_frontmatter: false,
+            metadata_parse_error: None,
+            content_start_line: 1,
+            frontmatter_span: None,
+        }
+    }
+
+    fn test_sections(doc: &MarkdownDocument) -> Vec<SectionRecord> {
+        markdown::build_sections(doc)
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, section)| SectionRecord {
+                section_id: sha256_hex(format!(
+                    "{}:{ordinal}:{}",
+                    doc.relative_path, section.heading_path
+                )),
+                doc_path: doc.relative_path.clone(),
+                ordinal: ordinal as i64,
+                heading_path: section.heading_path,
+                heading_level: section.heading_level,
+                parent_heading_path: section.parent_heading_path,
+                body_text: section.body_text,
+                first_paragraph: section.first_paragraph,
+                section_hash: format!("section-hash-{ordinal}"),
+                heading_line: section.heading_line,
+                body_start_line: section.body_start_line,
+                end_line: section.end_line,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn build_graph_input_extracts_only_relative_markdown_links() {
+        let doc = test_doc(
+            "Research/GCOPTER/Ego-Planner.md",
+            "# Planner\nSee [MINCO](../MINCO.md)\n![img](../skip.md)\n[anchor](#local)\n[external](https://example.com/demo.md)\n[fragment](../DDR-Opt.md#sec)\nSee [DDR](../DDR-Opt.md)\n",
+        );
+        let sections = test_sections(&doc);
+
+        let graph_input = build_graph_input(&doc, &sections);
+
+        assert_eq!(graph_input.links.len(), 2);
+        assert_eq!(graph_input.links[0].target_doc_path, "Research/MINCO.md");
+        assert_eq!(graph_input.links[0].href, "../MINCO.md");
+        assert_eq!(graph_input.links[0].text, "MINCO");
+        assert_eq!(graph_input.links[0].line, 2);
+        assert_eq!(graph_input.links[1].target_doc_path, "Research/DDR-Opt.md");
+        assert_eq!(graph_input.links[1].href, "../DDR-Opt.md");
+        assert_eq!(graph_input.links[1].text, "DDR");
+        assert_eq!(graph_input.links[1].line, 7);
+    }
+
+    #[test]
+    fn build_graph_records_emits_section_and_doc_level_links_to_edges() {
+        let source_doc = test_doc(
+            "Research/GCOPTER/Ego-Planner.md",
+            "# Planner\nSee [MINCO](../MINCO.md)\n## More\nAgain [MINCO](../MINCO.md)\n",
+        );
+        let target_doc = test_doc("Research/MINCO.md", "# MINCO\nTarget\n");
+        let source_sections = test_sections(&source_doc);
+        let target_sections = test_sections(&target_doc);
+        let docs = vec![
+            build_graph_input(&source_doc, &source_sections),
+            build_graph_input(&target_doc, &target_sections),
+        ];
+
+        let (_nodes, edges) =
+            build_graph_records(&docs, &[], &[], "graph-v-test", 0, 0.42).unwrap();
+        let section_edges = edges
+            .iter()
+            .filter(|edge| {
+                edge.edge_type == "links_to"
+                    && edge.src_node_id.starts_with("section::")
+                    && edge.dst_node_id == doc_node_id("Research/MINCO.md")
+            })
+            .collect::<Vec<_>>();
+        let doc_edge = edges
+            .iter()
+            .find(|edge| {
+                edge.edge_type == "links_to"
+                    && edge.src_node_id == doc_node_id("Research/GCOPTER/Ego-Planner.md")
+                    && edge.dst_node_id == doc_node_id("Research/MINCO.md")
+            })
+            .unwrap();
+
+        assert_eq!(section_edges.len(), 2);
+        assert!(
+            section_edges
+                .iter()
+                .any(|edge| edge.src_node_id == section_node_id(&source_sections[0]))
+        );
+        assert!(
+            section_edges
+                .iter()
+                .any(|edge| edge.src_node_id == section_node_id(&source_sections[1]))
+        );
+        assert_eq!(doc_edge.weight, 0.94);
+
+        let evidence: Value = serde_json::from_str(&doc_edge.evidence_json).unwrap();
+        assert_eq!(
+            evidence.get("href").and_then(Value::as_str),
+            Some("../MINCO.md")
+        );
+        assert_eq!(evidence.get("text").and_then(Value::as_str), Some("MINCO"));
+        assert_eq!(evidence.get("line").and_then(Value::as_u64), Some(2));
+        assert_eq!(
+            evidence.get("mention_count").and_then(Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            evidence.get("target_path").and_then(Value::as_str),
+            Some("Research/MINCO.md")
+        );
     }
 }

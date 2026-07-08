@@ -572,7 +572,38 @@ fn explain_edge(edge: &GraphEdgeRecord) -> Result<String> {
         "semantic_similar_doc" | "semantic_similar_section" => {
             format!("语义相似度 {:.3}", edge.weight)
         }
-        "links_to" => "正文链接".to_string(),
+        "links_to" => {
+            let mention_count = payload
+                .get("mention_count")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(1);
+            payload
+                .get("line")
+                .and_then(|value| value.as_u64())
+                .map(|line| {
+                    let href = payload
+                        .get("href")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default();
+                    let text = payload
+                        .get("text")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default();
+                    let prefix = if mention_count > 1 {
+                        format!("正文链接：{mention_count} 处，首个 L{line}")
+                    } else {
+                        format!("正文链接：L{line}")
+                    };
+                    if href.is_empty() {
+                        prefix
+                    } else if text.is_empty() {
+                        format!("{prefix} -> {href}")
+                    } else {
+                        format!("{prefix} [{text}]({href})")
+                    }
+                })
+                .unwrap_or_else(|| "正文链接".to_string())
+        }
         "contains" => "结构包含".to_string(),
         other => other.to_string(),
     })
